@@ -27,9 +27,13 @@ func NewApp() *App {
 }
 
 // startup is invoked by Wails once the frontend is ready. It starts a ticker
-// that pushes live status to the UI via the "status" event.
+// that pushes live status to the UI via the "status" event, and undoes any
+// proxy left behind by a previous run that didn't shut down cleanly.
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	if err := sysproxy.Cleanup(); err != nil {
+		runtime.LogWarningf(ctx, "sysproxy cleanup: %v", err)
+	}
 	go a.statusLoop()
 }
 

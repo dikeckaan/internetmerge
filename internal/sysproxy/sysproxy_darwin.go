@@ -47,6 +47,27 @@ func disable(service string) error {
 	return run(networksetup, "-setsocksfirewallproxystate", service, "off")
 }
 
+// cleanup turns off the SOCKS proxy on any service whose proxy currently points
+// at a loopback address (i.e. one we likely set in a prior run that crashed).
+func cleanup() error {
+	svcs, err := services()
+	if err != nil {
+		return nil // best effort
+	}
+	for _, svc := range svcs {
+		out, err := exec.Command(networksetup, "-getsocksfirewallproxy", svc).Output()
+		if err != nil {
+			continue
+		}
+		text := string(out)
+		if strings.Contains(text, "Enabled: Yes") &&
+			(strings.Contains(text, "127.0.0.1") || strings.Contains(text, "localhost")) {
+			_ = disable(svc)
+		}
+	}
+	return nil
+}
+
 func run(name string, args ...string) error {
 	cmd := exec.Command(name, args...)
 	if out, err := cmd.CombinedOutput(); err != nil {

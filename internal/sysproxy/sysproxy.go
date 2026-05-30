@@ -18,3 +18,9 @@ func Enable(service, host string, port int) error { return enable(service, host,
 
 // Disable turns off the SOCKS proxy for the named network service.
 func Disable(service string) error { return disable(service) }
+
+// Cleanup undoes any leftover proxy configuration we set in a previous run that
+// didn't shut down cleanly (e.g. a crash or force-quit). Safe to call on every
+// startup; a no-op when nothing of ours is left behind. Returns nil on platforms
+// without a system proxy.
+func Cleanup() error { return cleanup() }

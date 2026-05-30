@@ -38,6 +38,20 @@ func disable(service string) error {
 	return gset("org.gnome.system.proxy", "mode", "none")
 }
 
+// cleanup resets the GNOME proxy mode to none if it's currently manual pointing
+// at a loopback SOCKS host (crash recovery). Best effort.
+func cleanup() error {
+	host, err := exec.Command("gsettings", "get", "org.gnome.system.proxy.socks", "host").Output()
+	if err != nil {
+		return nil
+	}
+	h := strings.Trim(strings.TrimSpace(string(host)), "'\"")
+	if h == "127.0.0.1" || h == "localhost" {
+		_ = disable(linuxService)
+	}
+	return nil
+}
+
 func gset(schema, key, value string) error {
 	cmd := exec.Command("gsettings", "set", schema, key, value)
 	if out, err := cmd.CombinedOutput(); err != nil {

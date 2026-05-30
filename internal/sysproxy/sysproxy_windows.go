@@ -55,11 +55,19 @@ func enable(service, host string, port int) error {
 	// Remember the prior state once, so repeated Enable calls don't clobber it.
 	savedMu.Lock()
 	if !savedValid {
+		var enable uint32
 		if v, _, e := k.GetIntegerValue("ProxyEnable"); e == nil {
-			savedEnable = uint32(v)
+			enable = uint32(v)
 		}
-		savedServer, _, _ = k.GetStringValue("ProxyServer")
-		savedOverride, _, _ = k.GetStringValue("ProxyOverride")
+		server, _, _ := k.GetStringValue("ProxyServer")
+		override, _, _ := k.GetStringValue("ProxyOverride")
+		// If the "prior" state is already OUR proxy (e.g. a previous run crashed
+		// without restoring), don't capture it — capture "off" instead, so Disable
+		// truly turns the proxy off rather than re-pointing at our dead listener.
+		if isOurs(server) {
+			enable, server, override = 0, "", override
+		}
+		savedEnable, savedServer, savedOverride = enable, server, override
 		savedValid = true
 	}
 	savedMu.Unlock()
@@ -78,7 +86,7 @@ func enable(service, host string, port int) error {
 }
 
 func disable(service string) error {
-	k, err := registry.OpenKey(registry.CURRENT_USER, internetSettingsKey, registry.SET_VALUE)
+	k, err := registry.OpenKey(registry.CURRENT_USER, internetSettingsKey, registry.QUERY_VALUE|registry.SET_VALUE)
 	if err != nil {
 		return fmt.Errorf("sysproxy: open Internet Settings: %w", err)
 	}
@@ -90,20 +98,39 @@ func disable(service string) error {
 	savedValid = false
 	savedMu.Unlock()
 
-	if restore {
-		// Put back exactly what the user had.
-		_ = k.SetDWordValue("ProxyEnable", enable)
-		if server != "" {
-			_ = k.SetStringValue("ProxyServer", server)
-		} else {
-			_ = k.SetStringValue("ProxyServer", "")
-		}
-		_ = k.SetStringValue("ProxyOverride", override)
-	} else {
-		// No saved state (e.g. recovery after a crash): just turn it off.
-		_ = k.SetDWordValue("ProxyEnable", 0)
-		_ = k.SetStringValue("ProxyServer", "")
+	// Decide the target state. Critically: never leave OUR proxy in place. If we
+	// have no trustworthy saved state, or the saved/restore value is still ours,
+	// force the proxy OFF.
+	curServer, _, _ := k.GetStringValue("ProxyServer")
+	tEnable, tServer, tOverride := decideRestore(restore, enable, server, override, curServer)
+
+	if err := k.SetDWordValue("ProxyEnable", tEnable); err != nil {
+		return fmt.Errorf("sysproxy: set ProxyEnable: %w", err)
 	}
+	if err := k.SetStringValue("ProxyServer", tServer); err != nil {
+		return fmt.Errorf("sysproxy: set ProxyServer: %w", err)
+	}
+	if err := k.SetStringValue("ProxyOverride", tOverride); err != nil {
+		return fmt.Errorf("sysproxy: set ProxyOverride: %w", err)
+	}
+	return notifyWinINet()
+}
+
+// cleanup turns the proxy off if the current ProxyServer is one we set in a
+// prior run that didn't restore (crash/force-quit recovery). It never touches a
+// proxy that isn't ours.
+func cleanup() error {
+	k, err := registry.OpenKey(registry.CURRENT_USER, internetSettingsKey, registry.QUERY_VALUE|registry.SET_VALUE)
+	if err != nil {
+		return fmt.Errorf("sysproxy: open Internet Settings: %w", err)
+	}
+	defer k.Close()
+	cur, _, _ := k.GetStringValue("ProxyServer")
+	if !isOurs(cur) {
+		return nil // nothing of ours left behind
+	}
+	_ = k.SetDWordValue("ProxyEnable", 0)
+	_ = k.SetStringValue("ProxyServer", "")
 	return notifyWinINet()
 }
 
