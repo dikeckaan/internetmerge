@@ -118,9 +118,10 @@ func (a *App) AppVersion() string {
 }
 
 // CheckForUpdate asks GitHub whether a newer release exists for this OS/arch.
-// The result is cached so DownloadAndApplyUpdate needs no round-tripped struct
-// argument (Wails struct params can silently drop fields).
-func (a *App) CheckForUpdate() (*updater.Info, error) {
+// It returns a single JSON-shaped payload so the JS side does not have to
+// interpret Wails' multi-return error semantics. The successful info is cached
+// so DownloadAndApplyUpdate needs no round-tripped struct argument.
+func (a *App) CheckForUpdate() updater.CheckResult {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	info, err := updater.Check(ctx)
@@ -129,7 +130,7 @@ func (a *App) CheckForUpdate() (*updater.Info, error) {
 		a.lastUpdate = info
 		a.mu.Unlock()
 	}
-	return info, err
+	return updater.NewCheckResult(info, err)
 }
 
 // DownloadAndApplyUpdate downloads the asset from the last CheckForUpdate and

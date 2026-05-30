@@ -15,6 +15,12 @@
 }
 
 * { box-sizing: border-box; }
+
+/* The HTML `hidden` attribute must always win. Without this, class rules like
+   `.update { display:flex }` override `hidden`'s implicit `display:none`, which
+   made the update banner show even when JS had hidden it (and on up-to-date
+   builds where the banner was never un-hidden). This was THE updater bug. */
+[hidden] { display: none !important; }
 html, body { margin: 0; height: 100%; }
 body {
   background: radial-gradient(1200px 600px at 50% -200px, #16233c 0%, var(--bg) 60%);

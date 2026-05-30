@@ -90,7 +90,8 @@ function updMsg(text, kind) {
 async function checkForUpdate() {
   try {
     const info = await Backend.CheckForUpdate();
-    if (!info || !info.available) return;
+    if (!info || info.error) return;
+    if (!info.available) return;
     if (localStorage.getItem(skipUpdateKey(info.latestVersion)) === "1") return;
     updateInfo = info;
     $("updateVer").textContent = `${info.currentVersion} → ${info.latestVersion}`;
@@ -98,7 +99,7 @@ async function checkForUpdate() {
     // If no direct asset matched, the green button just opens the page.
     $("updateYes").textContent = info.hasAsset ? "Download & install" : "Open page";
     $("updateBanner").hidden = false;
-  } catch (e) {
+  } catch (_) {
     /* offline or rate-limited — silently ignore on startup */
   }
 }

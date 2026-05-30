@@ -36,6 +36,41 @@ type Info struct {
 	HTMLURL        string `json:"htmlURL"` // release page (fallback for the user)
 }
 
+// CheckResult is the single-object Wails payload for update checks. It mirrors
+// Info and carries any check error as data so the JS side never has to interpret
+// a Go (*Info, error) return tuple.
+type CheckResult struct {
+	Available      bool   `json:"available"`
+	HasAsset       bool   `json:"hasAsset"`
+	CurrentVersion string `json:"currentVersion"`
+	LatestVersion  string `json:"latestVersion"`
+	Notes          string `json:"notes"`
+	AssetName      string `json:"assetName"`
+	AssetURL       string `json:"assetURL"`
+	HTMLURL        string `json:"htmlURL"`
+	Error          string `json:"error"`
+}
+
+func NewCheckResult(info *Info, err error) CheckResult {
+	var result CheckResult
+	if info != nil {
+		result.Available = info.Available
+		result.HasAsset = info.HasAsset
+		result.CurrentVersion = info.CurrentVersion
+		result.LatestVersion = info.LatestVersion
+		result.Notes = info.Notes
+		result.AssetName = info.AssetName
+		result.AssetURL = info.AssetURL
+		result.HTMLURL = info.HTMLURL
+	} else {
+		result.CurrentVersion = version.Version
+	}
+	if err != nil {
+		result.Error = err.Error()
+	}
+	return result
+}
+
 type ghRelease struct {
 	TagName    string `json:"tag_name"`
 	Draft      bool   `json:"draft"`

@@ -5,18 +5,28 @@ package main
 
 import (
 	"embed"
+	"fmt"
 	"log"
+	"os"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 	"github.com/wailsapp/wails/v2/pkg/options/mac"
+
+	"github.com/kaandikec/internetmerge/internal/version"
 )
 
 //go:embed all:frontend/dist
 var assets embed.FS
 
 func main() {
+	// Lets us confirm the exact runtime version baked into a GUI build.
+	if len(os.Args) > 1 && (os.Args[1] == "--print-version" || os.Args[1] == "--version") {
+		fmt.Println(version.Version)
+		return
+	}
+
 	app := NewApp()
 
 	err := wails.Run(&options.App{
