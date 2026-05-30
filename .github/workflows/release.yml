@@ -38,6 +38,7 @@ jobs:
             GOOS=${t%/*} GOARCH=${t#*/} go build ./...
           done
 
+  # Native GUI builds (the targets that have GitHub-hosted runners).
   build:
     needs: test
     strategy:
@@ -59,9 +60,6 @@ jobs:
           - name: linux-amd64
             os: ubuntu-22.04
             platform: linux/amd64
-          - name: linux-arm64
-            os: ubuntu-24.04-arm
-            platform: linux/arm64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -82,23 +80,31 @@ jobs:
 
       - name: Install Wails
         shell: bash
-        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+        # Pin to the version in go.mod; @latest pulled inconsistent CLI versions
+        # across matrix jobs.
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
 
       - name: Build (Wails)
         shell: bash
-        run: wails build -platform ${{ matrix.platform }} -clean -o InternetMerge
+        # -s skips the frontend build: our frontend is pre-built static files in
+        # frontend/dist, and re-bundling them triggered esbuild CSS-parse errors
+        # ("Unexpected token Function") on the Linux/Windows runners.
+        run: wails build -platform ${{ matrix.platform }} -s -clean -o InternetMerge
 
       - name: Package artifact
         shell: bash
+        # Absolute archive destination — relative "../../dist" after cd build/bin
+        # was fragile on the Windows runner.
         run: |
-          mkdir -p dist
+          DIST="$GITHUB_WORKSPACE/dist"
+          mkdir -p "$DIST"
           cd build/bin
           if [ "${{ runner.os }}" = "macOS" ]; then
-            zip -r -y "../../dist/InternetMerge-${{ matrix.name }}.zip" InternetMerge.app
+            zip -r -y "$DIST/InternetMerge-${{ matrix.name }}.zip" InternetMerge.app
           elif [ "${{ runner.os }}" = "Windows" ]; then
-            7z a "../../dist/InternetMerge-${{ matrix.name }}.zip" InternetMerge.exe
+            7z a "$DIST/InternetMerge-${{ matrix.name }}.zip" InternetMerge.exe
           else
-            tar czf "../../dist/InternetMerge-${{ matrix.name }}.tar.gz" InternetMerge
+            tar czf "$DIST/InternetMerge-${{ matrix.name }}.tar.gz" InternetMerge
           fi
 
       - name: Upload build artifact
@@ -107,6 +113,39 @@ jobs:
           name: InternetMerge-${{ matrix.name }}
           path: dist/*
 
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+
+  # linux/arm64 ships as a headless CLI: the only GitHub-hosted arm64 Linux
+  # runner (ubuntu-24.04-arm) cannot install webkit2gtk for the Wails GUI, so we
+  # cross-compile the CGO-free CLI on x64 instead.
+  linux-arm64-cli:
+    needs: test
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Cross-compile CLI for linux/arm64
+        env:
+          GOOS: linux
+          GOARCH: arm64
+          CGO_ENABLED: "0"
+        run: go build -o InternetMerge ./cmd/internetmerge
+      - name: Package artifact
+        run: |
+          DIST="$GITHUB_WORKSPACE/dist"
+          mkdir -p "$DIST"
+          tar czf "$DIST/InternetMerge-linux-arm64-cli.tar.gz" InternetMerge
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: InternetMerge-linux-arm64-cli
+          path: dist/*
       - name: Attach to release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
