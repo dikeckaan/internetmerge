@@ -127,12 +127,6 @@ jobs:
           name: InternetMerge-${{ matrix.name }}
           path: dist/*
 
-      - name: Attach to release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/*
-
   # arm64 builds: no working hosted GUI toolchain (no Linux arm64 webkit; Windows
   # arm64 has no cgo cross-toolchain), so ship the CGO-free headless CLI built on
   # an x64 runner.
@@ -170,8 +164,20 @@ jobs:
         with:
           name: InternetMerge-${{ matrix.name }}
           path: dist/*
-      - name: Attach to release
-        if: startsWith(github.ref, 'refs/tags/v')
+
+  # Single release job: gather every build's artifact and attach them in one
+  # shot. Doing this per-build raced (concurrent gh-release create/update) and
+  # dropped an asset; one job avoids that entirely.
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build, arm64-cli]
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*
+          files: artifacts/**/*
