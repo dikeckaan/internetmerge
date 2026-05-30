@@ -1,0 +1,11 @@
+# Build output
+/build/bin/
+/internetmerge
+/internetmerge-gui
+
+# Wails generated bindings (regenerated on build)
+/frontend/wailsjs/
+
+# OS / editor
+.DS_Store
+*.log

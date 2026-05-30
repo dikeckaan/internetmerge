@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>InternetMerge</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="app">
+    <header class="titlebar" style="--wails-draggable:drag">
+      <div class="brand">
+        <span class="logo">⇄</span>
+        <h1>InternetMerge</h1>
+      </div>
+      <div id="statusBadge" class="badge stopped">Stopped</div>
+    </header>
+
+    <div class="note">
+      <strong>Note:</strong> This bonds links by spreading connections across them, so
+      <em>total</em> throughput rises with many parallel transfers. A single download is not
+      faster, and there is no speed gain if both links share the same upstream router/ISP —
+      use links on <em>different</em> networks (e.g. Wi-Fi + phone USB tethering).
+    </div>
+
+    <main>
+      <section class="card">
+        <h2>1. Choose links to bond</h2>
+        <div id="interfaces" class="iflist">Loading interfaces…</div>
+        <button id="refreshIfaces" class="ghost">Refresh</button>
+      </section>
+
+      <section class="card">
+        <h2>2. Options</h2>
+        <label class="row">
+          <span>SOCKS5 listen address</span>
+          <input id="addr" type="text" value="127.0.0.1:1080" />
+        </label>
+        <div class="row top">
+          <span>Route system traffic through proxy<br /><small>Sets macOS SOCKS proxy for the chosen network services (restored on stop).</small></span>
+          <div id="services" class="svclist">…</div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="actions">
+          <button id="autoBtn" class="primary auto">⚡ Auto-bond</button>
+          <button id="startBtn" class="primary">Start bonding</button>
+          <button id="stopBtn" class="danger" disabled>Stop</button>
+          <span id="errmsg" class="errmsg"></span>
+        </div>
+        <p class="hint">Auto-bond selects every ready link and routes your system through the proxy automatically (restored on Stop).</p>
+      </section>
+
+      <section class="card">
+        <h2>Live throughput</h2>
+        <div class="totals">
+          <div class="total"><span class="tlabel">Total ↓</span><span id="totalDown" class="tval">0 B/s</span></div>
+          <div class="total"><span class="tlabel">Total ↑</span><span id="totalUp" class="tval">0 B/s</span></div>
+          <div class="total"><span class="tlabel">Connections</span><span id="totalConns" class="tval">0</span></div>
+        </div>
+        <table class="stats">
+          <thead>
+            <tr><th>Interface</th><th>Weight</th><th>Alive</th><th>Conns</th><th>Down/s</th><th>Up/s</th></tr>
+          </thead>
+          <tbody id="statsBody">
+            <tr><td colspan="6" class="muted">Not running.</td></tr>
+          </tbody>
+        </table>
+      </section>
+    </main>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

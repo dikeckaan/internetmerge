@@ -1,0 +1,9 @@
+{
+  "name": "internetmerge-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Static frontend for InternetMerge (no build step; assets live in dist/).",
+  "scripts": {
+    "build": "echo 'static frontend — nothing to build'"
+  }
+}

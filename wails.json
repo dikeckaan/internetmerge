@@ -1,0 +1,13 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "InternetMerge",
+  "outputfilename": "InternetMerge",
+  "description": "Bond multiple network links into faster total internet.",
+  "frontend:install": "",
+  "frontend:build": "",
+  "frontend:dev:watcher": "",
+  "frontend:dev:serverUrl": "auto",
+  "author": {
+    "name": "kaandikec"
+  }
+}
