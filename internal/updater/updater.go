@@ -110,10 +110,11 @@ func pickAsset(rel *ghRelease) (name, url string) {
 			prefs = []string{"windows-amd64-setup", "windows-amd64-portable", "windows-amd64-cli", "windows-amd64"}
 		}
 	case "darwin":
+		// Prefer the .dmg (drag-drop installer) over the raw .zip.
 		if arch == "arm64" {
-			prefs = []string{"macos-arm64", "darwin-arm64"}
+			prefs = []string{"macos-arm64.dmg", "macos-arm64", "darwin-arm64"}
 		} else {
-			prefs = []string{"macos-intel", "macos-amd64", "darwin-amd64"}
+			prefs = []string{"macos-intel.dmg", "macos-intel", "macos-amd64", "darwin-amd64"}
 		}
 	case "linux":
 		if arch == "arm64" {

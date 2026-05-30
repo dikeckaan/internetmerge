@@ -119,10 +119,44 @@ jobs:
             --key "$KEY" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" --wait
           xcrun stapler staple build/bin/InternetMerge.app
 
-      - name: Package
+      - name: Package (.zip + drag-drop .dmg)
         run: |
+          set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/dist"
+          # Keep the .zip (used by older clients / fallback).
           ditto -c -k --keepParent build/bin/InternetMerge.app "$GITHUB_WORKSPACE/dist/InternetMerge-macos-arm64.zip"
+          # Build a drag-to-Applications .dmg.
+          brew install create-dmg >/dev/null 2>&1 || brew install create-dmg
+          STAGE="$RUNNER_TEMP/dmg"
+          rm -rf "$STAGE"; mkdir -p "$STAGE"
+          cp -R build/bin/InternetMerge.app "$STAGE/"
+          create-dmg \
+            --volname "InternetMerge" \
+            --window-pos 200 120 --window-size 660 400 --icon-size 110 \
+            --icon "InternetMerge.app" 165 175 \
+            --app-drop-link 495 175 \
+            --no-internet-enable \
+            "$GITHUB_WORKSPACE/dist/InternetMerge-macos-arm64.dmg" \
+            "$STAGE" || \
+          create-dmg \
+            --volname "InternetMerge" \
+            "$GITHUB_WORKSPACE/dist/InternetMerge-macos-arm64.dmg" \
+            "$STAGE"
+      - name: Sign + notarize the DMG
+        if: env.MACOS_CERT != ''
+        env:
+          MACOS_IDENTITY: ${{ secrets.MACOS_DEVELOPER_IDENTITY }}
+          NOTARY_KEY: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+          NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          DMG="$GITHUB_WORKSPACE/dist/InternetMerge-macos-arm64.dmg"
+          security unlock-keychain -p "$MACOS_KCPW" "$MACOS_KC"
+          codesign --force --timestamp --sign "$MACOS_IDENTITY" "$DMG"
+          KEY="$RUNNER_TEMP/AuthKey.p8"; printf '%s' "$NOTARY_KEY" > "$KEY"
+          xcrun notarytool submit "$DMG" --key "$KEY" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" --wait
+          xcrun stapler staple "$DMG"
       - uses: actions/upload-artifact@v4
         with:
           name: InternetMerge-macos-arm64
