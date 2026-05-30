@@ -46,44 +46,55 @@ async function init() {
     if (v && v !== "dev") $("verTag").textContent = v;
   } catch (_) {}
   $("updateNo").addEventListener("click", () => ($("updateBanner").hidden = true));
+  $("updatePage").addEventListener("click", () => {
+    if (updateInfo && updateInfo.htmlURL) Backend.OpenURL(updateInfo.htmlURL);
+  });
   $("updateYes").addEventListener("click", onUpdate);
   checkForUpdate();
 }
 
 let updateInfo = null;
 
+function updMsg(text, kind) {
+  const el = $("updateMsg");
+  el.textContent = text || "";
+  el.className = "update-msg" + (kind ? " " + kind : "");
+}
+
 async function checkForUpdate() {
   try {
     const info = await Backend.CheckForUpdate();
     if (!info || !info.available) return;
     updateInfo = info;
-    $("updateVer").textContent =
-      `${info.currentVersion} → ${info.latestVersion}` +
-      (info.assetName ? "" : " (open release page)");
+    $("updateVer").textContent = `${info.currentVersion} → ${info.latestVersion}`;
+    updMsg(info.assetName ? "" : "No installer for this system — use Open page.", "");
+    // If no direct asset matched, the green button just opens the page.
+    $("updateYes").textContent = info.assetName ? "Download & install" : "Open page";
     $("updateBanner").hidden = false;
-  } catch (_) {
-    /* offline or rate-limited — silently ignore */
+  } catch (e) {
+    /* offline or rate-limited — silently ignore on startup */
   }
 }
 
 async function onUpdate() {
   if (!updateInfo) return;
-  // No matched asset for this build → just open the release page.
+  // No matched asset → open the release page (guaranteed to work).
   if (!updateInfo.assetName) {
     Backend.OpenURL(updateInfo.htmlURL);
-    $("updateBanner").hidden = true;
     return;
   }
   const btn = $("updateYes");
   btn.disabled = true;
   btn.textContent = "Downloading…";
+  updMsg("Downloading " + updateInfo.assetName + " …", "");
   try {
-    await Backend.DownloadAndApplyUpdate(updateInfo);
-    btn.textContent = "Opening…";
+    await Backend.DownloadAndApplyUpdate();
+    btn.textContent = "Done";
+    updMsg("Downloaded. The installer/file should now be open — follow its steps, then reopen InternetMerge.", "ok");
   } catch (e) {
     btn.disabled = false;
-    btn.textContent = "Download";
-    // Fall back to the release page on failure.
+    btn.textContent = "Download & install";
+    updMsg("Download failed (" + e + "). Opening the release page instead…", "err");
     Backend.OpenURL(updateInfo.htmlURL);
   }
 }

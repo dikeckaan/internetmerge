@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -19,6 +20,9 @@ import (
 type App struct {
 	ctx context.Context
 	eng *engine.Engine
+
+	mu         sync.Mutex
+	lastUpdate *updater.Info // cached result of the last CheckForUpdate
 }
 
 // NewApp constructs the backend with an idle engine.
@@ -114,23 +118,43 @@ func (a *App) AppVersion() string {
 }
 
 // CheckForUpdate asks GitHub whether a newer release exists for this OS/arch.
+// The result is cached so DownloadAndApplyUpdate needs no round-tripped struct
+// argument (Wails struct params can silently drop fields).
 func (a *App) CheckForUpdate() (*updater.Info, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	return updater.Check(ctx)
+	info, err := updater.Check(ctx)
+	if err == nil && info != nil {
+		a.mu.Lock()
+		a.lastUpdate = info
+		a.mu.Unlock()
+	}
+	return info, err
 }
 
-// DownloadAndApplyUpdate downloads the matched asset and hands off to the OS
-// (runs the Windows installer, reveals the macOS .app, etc.). Called only after
-// the user confirms in the UI.
-func (a *App) DownloadAndApplyUpdate(info updater.Info) error {
+// DownloadAndApplyUpdate downloads the asset from the last CheckForUpdate and
+// hands off to the OS (runs the Windows installer, reveals the macOS .app). It
+// takes no argument so nothing is lost crossing the JS boundary.
+func (a *App) DownloadAndApplyUpdate() error {
+	a.mu.Lock()
+	info := a.lastUpdate
+	a.mu.Unlock()
+	if info == nil {
+		return fmt.Errorf("no update info; check for updates first")
+	}
+	if info.AssetURL == "" {
+		return fmt.Errorf("no downloadable asset for this system (%s)", info.AssetName)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	path, err := updater.Download(ctx, &info)
+	path, err := updater.Download(ctx, info)
 	if err != nil {
-		return err
+		return fmt.Errorf("download: %w", err)
 	}
-	return updater.Apply(path)
+	if err := updater.Apply(path); err != nil {
+		return fmt.Errorf("open update: %w", err)
+	}
+	return nil
 }
 
 // OpenURL opens a URL in the user's browser (used as the updater fallback).
