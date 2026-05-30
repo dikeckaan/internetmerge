@@ -39,6 +39,53 @@ async function init() {
     window.runtime.EventsOn("status", onStatus);
   }
   try { onStatus(await Backend.Status()); } catch (_) {}
+
+  // Version label + background update check.
+  try {
+    const v = await Backend.AppVersion();
+    if (v && v !== "dev") $("verTag").textContent = v;
+  } catch (_) {}
+  $("updateNo").addEventListener("click", () => ($("updateBanner").hidden = true));
+  $("updateYes").addEventListener("click", onUpdate);
+  checkForUpdate();
+}
+
+let updateInfo = null;
+
+async function checkForUpdate() {
+  try {
+    const info = await Backend.CheckForUpdate();
+    if (!info || !info.available) return;
+    updateInfo = info;
+    $("updateVer").textContent =
+      `${info.currentVersion} → ${info.latestVersion}` +
+      (info.assetName ? "" : " (open release page)");
+    $("updateBanner").hidden = false;
+  } catch (_) {
+    /* offline or rate-limited — silently ignore */
+  }
+}
+
+async function onUpdate() {
+  if (!updateInfo) return;
+  // No matched asset for this build → just open the release page.
+  if (!updateInfo.assetName) {
+    Backend.OpenURL(updateInfo.htmlURL);
+    $("updateBanner").hidden = true;
+    return;
+  }
+  const btn = $("updateYes");
+  btn.disabled = true;
+  btn.textContent = "Downloading…";
+  try {
+    await Backend.DownloadAndApplyUpdate(updateInfo);
+    btn.textContent = "Opening…";
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = "Download";
+    // Fall back to the release page on failure.
+    Backend.OpenURL(updateInfo.htmlURL);
+  }
 }
 
 // --- interface discovery / selection ---

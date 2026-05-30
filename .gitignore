@@ -3,6 +3,9 @@
 /internetmerge
 /internetmerge-gui
 
+# Wails downloads the WebView2 bootstrapper here at build time
+/build/windows/installer/tmp/
+
 # Wails generated bindings (regenerated on build)
 /frontend/wailsjs/
 

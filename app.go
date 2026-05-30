@@ -10,6 +10,8 @@ import (
 	"github.com/kaandikec/internetmerge/internal/engine"
 	"github.com/kaandikec/internetmerge/internal/netif"
 	"github.com/kaandikec/internetmerge/internal/sysproxy"
+	"github.com/kaandikec/internetmerge/internal/updater"
+	"github.com/kaandikec/internetmerge/internal/version"
 )
 
 // App is the Wails backend bound to the frontend. Its exported methods are
@@ -100,6 +102,36 @@ func (a *App) Stop() error {
 // Status returns the current engine status (also pushed via events).
 func (a *App) Status() engine.Status {
 	return a.eng.Status()
+}
+
+// AppVersion returns the running build's version string (e.g. "v0.4.0" or "dev").
+func (a *App) AppVersion() string {
+	return version.Version
+}
+
+// CheckForUpdate asks GitHub whether a newer release exists for this OS/arch.
+func (a *App) CheckForUpdate() (*updater.Info, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	return updater.Check(ctx)
+}
+
+// DownloadAndApplyUpdate downloads the matched asset and hands off to the OS
+// (runs the Windows installer, reveals the macOS .app, etc.). Called only after
+// the user confirms in the UI.
+func (a *App) DownloadAndApplyUpdate(info updater.Info) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	path, err := updater.Download(ctx, &info)
+	if err != nil {
+		return err
+	}
+	return updater.Apply(path)
+}
+
+// OpenURL opens a URL in the user's browser (used as the updater fallback).
+func (a *App) OpenURL(url string) {
+	runtime.BrowserOpenURL(a.ctx, url)
 }
 
 // statusLoop emits the engine status to the frontend once per second so the UI

@@ -26,6 +26,7 @@ import (
 	"github.com/kaandikec/internetmerge/internal/engine"
 	"github.com/kaandikec/internetmerge/internal/netif"
 	"github.com/kaandikec/internetmerge/internal/sysproxy"
+	"github.com/kaandikec/internetmerge/internal/version"
 )
 
 func main() {
@@ -38,6 +39,8 @@ func main() {
 		runList()
 	case "run":
 		runServe(os.Args[2:])
+	case "version", "--version", "-v":
+		fmt.Println("InternetMerge", version.Version)
 	case "-h", "--help", "help":
 		usage()
 	default:

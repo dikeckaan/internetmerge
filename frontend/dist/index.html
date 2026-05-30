@@ -10,11 +10,23 @@
   <div id="app">
     <!-- Title bar -->
     <header class="titlebar" style="--wails-draggable:drag">
-      <div class="brand"><span class="logo">⇄</span><span>InternetMerge</span></div>
+      <div class="brand"><span class="logo">⇄</span><span>InternetMerge</span><span id="verTag" class="ver"></span></div>
       <div id="statusPill" class="pill pill-idle">Idle</div>
     </header>
 
     <main>
+      <!-- UPDATE banner (hidden until a newer release is found) -->
+      <section id="updateBanner" class="update" hidden>
+        <div class="update-text">
+          <b>Update available</b>
+          <span id="updateVer"></span>
+        </div>
+        <div class="update-actions">
+          <button id="updateNo" class="btn btn-ghost btn-sm">Later</button>
+          <button id="updateYes" class="btn btn-go btn-sm">Download</button>
+        </div>
+      </section>
+
       <!-- HERO: big primary action + live total -->
       <section class="hero">
         <div class="hero-total">
