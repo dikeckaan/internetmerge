@@ -13,9 +13,10 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/mod/semver"
 
 	"github.com/kaandikec/internetmerge/internal/version"
 )
@@ -176,48 +177,32 @@ func Download(ctx context.Context, info *Info) (string, error) {
 	return out, nil
 }
 
-// isNewer reports whether latest (a tag like "v0.4.0") is strictly newer than
-// current. Dev/empty current is treated as "not newer" so devs aren't nagged.
+// isNewer reports whether latest is strictly newer than current, using Go's
+// canonical semver comparison (golang.org/x/mod/semver). Non-semver current
+// (e.g. "dev") is treated as "not newer" so dev builds aren't nagged. Tags
+// without a leading "v" and a trailing pre-release/build are tolerated.
 func isNewer(current, latest string) bool {
-	c := parseSemver(current)
-	l := parseSemver(latest)
-	if c == nil || l == nil {
+	c := normalizeSemver(current)
+	l := normalizeSemver(latest)
+	if !semver.IsValid(c) || !semver.IsValid(l) {
 		return false
 	}
-	for i := 0; i < 3; i++ {
-		if l[i] != c[i] {
-			return l[i] > c[i]
-		}
-	}
-	return false
+	return semver.Compare(l, c) > 0
 }
 
-// parseSemver turns "v1.2.3" (or "1.2.3") into [3]int{1,2,3}; returns nil for
-// non-semver inputs (e.g. "dev").
-func parseSemver(s string) []int {
+// normalizeSemver coerces a tag/version into a form semver.IsValid accepts:
+// trims spaces, ensures a leading "v". semver.Canonical isn't forced because
+// semver.Compare already ignores build metadata and handles pre-releases.
+func normalizeSemver(s string) string {
 	s = strings.TrimSpace(s)
-	s = strings.TrimPrefix(s, "v")
-	s = strings.TrimPrefix(s, "V")
 	if s == "" {
-		return nil
+		return ""
 	}
-	parts := strings.SplitN(s, ".", 3)
-	out := make([]int, 3)
-	for i := 0; i < 3; i++ {
-		if i >= len(parts) {
-			out[i] = 0
-			continue
-		}
-		// strip any pre-release suffix like "3-rc1"
-		num := parts[i]
-		if j := strings.IndexAny(num, "-+"); j >= 0 {
-			num = num[:j]
-		}
-		n, err := strconv.Atoi(num)
-		if err != nil {
-			return nil
-		}
-		out[i] = n
+	if s[0] != 'v' && s[0] != 'V' {
+		s = "v" + s
 	}
-	return out
+	if s[0] == 'V' {
+		s = "v" + s[1:]
+	}
+	return s
 }

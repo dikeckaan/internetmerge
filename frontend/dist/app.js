@@ -16,17 +16,43 @@ function backend() {
   return window.go && window.go.main && window.go.main.App;
 }
 
+function wireButtons() {
+  // Attach EVERY click handler synchronously, before any async/await work, so a
+  // slow or failing backend call can never leave buttons dead.
+  on("primaryBtn", "click", onPrimary);
+  on("stopBtn", "click", stop);
+  on("refreshBtn", "click", loadInterfaces);
+  // "Later": hide for this session only — the banner returns next launch.
+  on("updateLater", "click", () => ($("updateBanner").hidden = true));
+  // "Skip this version": persist so this exact version never nags again.
+  on("updateSkip", "click", () => {
+    if (updateInfo && updateInfo.latestVersion) {
+      try { localStorage.setItem(skipUpdateKey(updateInfo.latestVersion), "1"); } catch (_) {}
+    }
+    $("updateBanner").hidden = true;
+  });
+  on("updatePage", "click", () => {
+    if (updateInfo && updateInfo.htmlURL) Backend.OpenURL(updateInfo.htmlURL);
+  });
+  on("updateYes", "click", onUpdate);
+}
+
+// on safely attaches a listener, logging (not throwing) if the element is absent.
+function on(id, event, handler) {
+  const el = $(id);
+  if (el) el.addEventListener(event, handler);
+  else console.error("missing element:", id);
+}
+
 async function init() {
+  wireButtons(); // first — never blocked by backend readiness
+
   for (let i = 0; i < 60 && !backend(); i++) await new Promise((r) => setTimeout(r, 50));
   Backend = backend();
   if (!Backend) {
     showError("Backend not available.");
     return;
   }
-
-  $("primaryBtn").addEventListener("click", onPrimary);
-  $("stopBtn").addEventListener("click", stop);
-  $("refreshBtn").addEventListener("click", loadInterfaces);
 
   await loadInterfaces();
   try {
@@ -45,19 +71,6 @@ async function init() {
     const v = await Backend.AppVersion();
     if (v && v !== "dev") $("verTag").textContent = v;
   } catch (_) {}
-  // "Later": hide for this session only — the banner returns next launch.
-  $("updateLater").addEventListener("click", () => ($("updateBanner").hidden = true));
-  // "Skip this version": persist so this exact version never nags again.
-  $("updateSkip").addEventListener("click", () => {
-    if (updateInfo && updateInfo.latestVersion) {
-      localStorage.setItem(skipUpdateKey(updateInfo.latestVersion), "1");
-    }
-    $("updateBanner").hidden = true;
-  });
-  $("updatePage").addEventListener("click", () => {
-    if (updateInfo && updateInfo.htmlURL) Backend.OpenURL(updateInfo.htmlURL);
-  });
-  $("updateYes").addEventListener("click", onUpdate);
   checkForUpdate();
 }
 
