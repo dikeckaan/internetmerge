@@ -145,6 +145,8 @@ jobs:
         run: |
           go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
           choco install nsis -y --no-progress
+          # choco doesn't refresh PATH for the current job; add NSIS explicitly.
+          @("C:\Program Files (x86)\NSIS","C:\Program Files\NSIS") | Where-Object { Test-Path $_ } | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
       - name: Build GUI (portable + NSIS setup) and CLI
         shell: pwsh
         run: |
@@ -178,6 +180,7 @@ jobs:
         run: |
           go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
           choco install nsis -y --no-progress
+          @("C:\Program Files (x86)\NSIS","C:\Program Files\NSIS") | Where-Object { Test-Path $_ } | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
       - name: Try GUI build (portable + setup)
         id: gui
         continue-on-error: true
