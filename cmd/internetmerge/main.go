@@ -25,7 +25,6 @@ import (
 
 	"github.com/kaandikec/internetmerge/internal/engine"
 	"github.com/kaandikec/internetmerge/internal/netif"
-	"github.com/kaandikec/internetmerge/internal/stats"
 	"github.com/kaandikec/internetmerge/internal/sysproxy"
 )
 
@@ -132,7 +131,8 @@ func printStats(ctx context.Context, eng *engine.Engine) {
 	defer ticker.Stop()
 	interactive := isTTY()
 
-	prev := map[string]stats.Sample{}
+	type prevSample struct{ up, down uint64 }
+	prev := map[string]prevSample{}
 	for {
 		select {
 		case <-ctx.Done():
@@ -140,21 +140,19 @@ func printStats(ctx context.Context, eng *engine.Engine) {
 			return
 		case <-ticker.C:
 			st := eng.Status()
-			links := map[string]string{}
-			weights := map[string]int{}
-			alive := map[string]bool{}
-			for _, l := range st.Links {
-				links[l.IfName] = l.Label
-				weights[l.IfName] = l.Weight
-				alive[l.IfName] = l.Alive
-			}
 			var b strings.Builder
-			for _, s := range st.Stats {
-				p := prev[s.Interface]
-				prev[s.Interface] = s
-				fmt.Fprintf(&b, "  %-8s w=%-2d alive=%-5t conns=%-3d down %s/s  up %s/s\n",
-					s.Interface, weights[s.Interface], alive[s.Interface], s.Connections,
-					humanRate((s.BytesDown-p.BytesDown)/2), humanRate((s.BytesUp-p.BytesUp)/2))
+			for _, l := range st.Links {
+				p := prev[l.IfName]
+				prev[l.IfName] = prevSample{up: l.BytesUp, down: l.BytesDown}
+				name := l.Label
+				if name == "" || name == l.IfName {
+					name = l.IfName
+				} else {
+					name = fmt.Sprintf("%s (%s)", l.Label, l.IfName)
+				}
+				fmt.Fprintf(&b, "  %-20s w=%-2d alive=%-5t conns=%-3d down %s/s  up %s/s\n",
+					name, l.Weight, l.Alive, l.Connections,
+					humanRate((l.BytesDown-p.down)/2), humanRate((l.BytesUp-p.up)/2))
 			}
 			if b.Len() == 0 {
 				continue

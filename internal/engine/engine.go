@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/kaandikec/internetmerge/internal/health"
+	"github.com/kaandikec/internetmerge/internal/netif"
 	"github.com/kaandikec/internetmerge/internal/proxy"
 	"github.com/kaandikec/internetmerge/internal/stats"
 	"github.com/kaandikec/internetmerge/internal/sysproxy"
@@ -35,6 +36,7 @@ type Engine struct {
 	reg          *stats.Registry
 	cancel       context.CancelFunc
 	proxyEnabled []string
+	labels       map[string]string // ifName -> friendly label, for Status
 	serveErr     error
 	serveErrMu   sync.Mutex
 }
@@ -94,6 +96,14 @@ func (e *Engine) Start(cfg Config) error {
 		enabled = append(enabled, svc)
 	}
 
+	// Snapshot friendly labels (e.g. "Wi-Fi", "Ethernet") so Status can show them.
+	labels := make(map[string]string)
+	if ifaces, err := netif.List(); err == nil {
+		for _, it := range ifaces {
+			labels[it.Name] = it.Label
+		}
+	}
+
 	e.running = true
 	e.cfg = cfg
 	e.disp = disp
@@ -101,6 +111,7 @@ func (e *Engine) Start(cfg Config) error {
 	e.reg = reg
 	e.cancel = cancel
 	e.proxyEnabled = enabled
+	e.labels = labels
 	e.serveErrMu.Lock()
 	e.serveErr = nil
 	e.serveErrMu.Unlock()
@@ -154,17 +165,30 @@ func (e *Engine) Running() bool {
 	return e.running
 }
 
-// Status is a point-in-time view of the engine for display.
-type Status struct {
-	Running       bool             `json:"running"`
-	Addr          string           `json:"addr"`
-	ProxyServices []string         `json:"proxyServices"`
-	Links         []proxy.LinkInfo `json:"links"`
-	Stats         []stats.Sample   `json:"stats"`
-	Error         string           `json:"error"`
+// LinkStatus is the unified per-link view the UI renders: it merges the
+// dispatcher's scheduling state (alive/weight) with the live byte/connection
+// counters, for EVERY bonded link — including ones that are idle or have been
+// taken out of rotation, so the user always sees what each link is doing.
+type LinkStatus struct {
+	IfName      string `json:"ifName"`
+	Label       string `json:"label"`
+	Alive       bool   `json:"alive"`
+	Weight      int    `json:"weight"`
+	BytesUp     uint64 `json:"bytesUp"`
+	BytesDown   uint64 `json:"bytesDown"`
+	Connections int64  `json:"connections"`
 }
 
-// Status returns the current engine status (links, counters, errors).
+// Status is a point-in-time view of the engine for display.
+type Status struct {
+	Running       bool         `json:"running"`
+	Addr          string       `json:"addr"`
+	ProxyServices []string     `json:"proxyServices"`
+	Links         []LinkStatus `json:"links"`
+	Error         string       `json:"error"`
+}
+
+// Status returns the current engine status (per-link state, counters, errors).
 func (e *Engine) Status() Status {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -174,8 +198,30 @@ func (e *Engine) Status() Status {
 	}
 	st.Addr = e.cfg.Addr
 	st.ProxyServices = append([]string(nil), e.proxyEnabled...)
-	st.Links = e.disp.Links()
-	st.Stats = e.reg.Snapshot()
+
+	// Index live counters by interface, then walk the authoritative link list so
+	// every bonded link appears even with zero traffic.
+	byIf := make(map[string]stats.Sample)
+	for _, s := range e.reg.Snapshot() {
+		byIf[s.Interface] = s
+	}
+	for _, l := range e.disp.Links() {
+		s := byIf[l.IfName]
+		label := e.labels[l.IfName]
+		if label == "" {
+			label = l.IfName
+		}
+		st.Links = append(st.Links, LinkStatus{
+			IfName:      l.IfName,
+			Label:       label,
+			Alive:       l.Alive,
+			Weight:      l.Weight,
+			BytesUp:     s.BytesUp,
+			BytesDown:   s.BytesDown,
+			Connections: s.Connections,
+		})
+	}
+
 	e.serveErrMu.Lock()
 	if e.serveErr != nil {
 		st.Error = e.serveErr.Error()

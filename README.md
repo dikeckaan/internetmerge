@@ -70,9 +70,13 @@ wails build              # produces build/bin/InternetMerge.app (or .exe / binar
 open build/bin/InternetMerge.app
 ```
 
-**⚡ Auto-bond** — one click selects every ready link and (on macOS) routes your
-system through the proxy automatically; **Stop** restores everything. Or pick
-interfaces manually, optionally tick network services, then **Start bonding**.
+The window lists every connection (Wi‑Fi, Ethernet, USB tethering, …). Ready
+ones are pre‑selected; tap to toggle, then hit **⚡ Merge connections**. A live
+gauge shows combined download speed and a card per link shows exactly what each
+one is carrying — including a clear **"no internet"** badge for any link that
+can't reach the net on its own (so you always know why something isn't merging).
+**Stop** restores your system proxy. Routing system traffic is on by default
+(toggle under **Advanced**).
 
 ### CLI
 
