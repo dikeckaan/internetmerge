@@ -26,6 +26,7 @@ const Repo = "dikeckaan/internetmerge"
 // Info describes an available update relative to the running build.
 type Info struct {
 	Available      bool   `json:"available"`
+	HasAsset       bool   `json:"hasAsset"`
 	CurrentVersion string `json:"currentVersion"`
 	LatestVersion  string `json:"latestVersion"`
 	Notes          string `json:"notes"`
@@ -67,13 +68,15 @@ func Check(ctx context.Context) (*Info, error) {
 	name, url := pickAsset(rel)
 	info.AssetName = name
 	info.AssetURL = url
-	// Even if we can't match an exact asset, mark it available so the UI can
-	// offer "open the release page".
+	info.HasAsset = name != "" && url != ""
+	// Available means "a newer release exists". HasAsset means the updater can
+	// download a matching file directly; otherwise the UI falls back to HTMLURL.
 	info.Available = true
 	return info, nil
 }
 
-// latestRelease fetches the newest non-draft release.
+// latestRelease fetches GitHub's latest published stable release. GitHub's
+// /releases/latest endpoint excludes drafts and prereleases.
 func latestRelease(ctx context.Context) (*ghRelease, error) {
 	url := "https://api.github.com/repos/" + Repo + "/releases/latest"
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -99,31 +102,35 @@ func latestRelease(ctx context.Context) (*ghRelease, error) {
 // pickAsset chooses the best release asset for the current OS/arch. It prefers
 // the GUI build and falls back to the CLI; on Windows it prefers the installer.
 func pickAsset(rel *ghRelease) (name, url string) {
-	goos, arch := runtime.GOOS, runtime.GOARCH
+	return pickAssetFor(rel, runtime.GOOS, runtime.GOARCH)
+}
+
+func pickAssetFor(rel *ghRelease, goos, arch string) (name, url string) {
 	// Candidate name fragments, most-preferred first.
 	var prefs []string
 	switch goos {
 	case "windows":
 		if arch == "arm64" {
-			prefs = []string{"windows-arm64-setup", "windows-arm64-portable", "windows-arm64-cli", "windows-arm64"}
+			prefs = []string{"windows-arm64-setup.exe", "windows-arm64-portable.zip", "windows-arm64-cli.exe", "windows-arm64"}
 		} else {
-			prefs = []string{"windows-amd64-setup", "windows-amd64-portable", "windows-amd64-cli", "windows-amd64"}
+			prefs = []string{"windows-amd64-setup.exe", "windows-amd64-portable.zip", "windows-amd64-cli.exe", "windows-amd64"}
 		}
 	case "darwin":
 		// Prefer the .dmg (drag-drop installer) over the raw .zip.
 		if arch == "arm64" {
-			prefs = []string{"macos-arm64.dmg", "macos-arm64", "darwin-arm64"}
+			prefs = []string{"macos-arm64.dmg", "macos-arm64.zip", "darwin-arm64"}
 		} else {
-			prefs = []string{"macos-intel.dmg", "macos-intel", "macos-amd64", "darwin-amd64"}
+			prefs = []string{"macos-intel.dmg", "macos-amd64.dmg", "macos-intel.zip", "macos-amd64.zip", "darwin-amd64"}
 		}
 	case "linux":
 		if arch == "arm64" {
-			prefs = []string{"linux-arm64"}
+			prefs = []string{"linux-arm64.tar.gz", "linux-arm64-cli.tar.gz", "linux-arm64"}
 		} else {
-			prefs = []string{"linux-amd64"}
+			prefs = []string{"linux-amd64.tar.gz", "linux-amd64-cli.tar.gz", "linux-amd64"}
 		}
 	}
 	for _, frag := range prefs {
+		frag = strings.ToLower(frag)
 		for _, a := range rel.Assets {
 			if strings.Contains(strings.ToLower(a.Name), frag) {
 				return a.Name, a.URL

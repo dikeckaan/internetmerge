@@ -45,7 +45,15 @@ async function init() {
     const v = await Backend.AppVersion();
     if (v && v !== "dev") $("verTag").textContent = v;
   } catch (_) {}
-  $("updateNo").addEventListener("click", () => ($("updateBanner").hidden = true));
+  // "Later": hide for this session only — the banner returns next launch.
+  $("updateLater").addEventListener("click", () => ($("updateBanner").hidden = true));
+  // "Skip this version": persist so this exact version never nags again.
+  $("updateSkip").addEventListener("click", () => {
+    if (updateInfo && updateInfo.latestVersion) {
+      localStorage.setItem(skipUpdateKey(updateInfo.latestVersion), "1");
+    }
+    $("updateBanner").hidden = true;
+  });
   $("updatePage").addEventListener("click", () => {
     if (updateInfo && updateInfo.htmlURL) Backend.OpenURL(updateInfo.htmlURL);
   });
@@ -54,6 +62,11 @@ async function init() {
 }
 
 let updateInfo = null;
+const updateSkipPrefix = "internetmerge.skipUpdate.";
+
+function skipUpdateKey(version) {
+  return updateSkipPrefix + String(version || "").trim();
+}
 
 function updMsg(text, kind) {
   const el = $("updateMsg");
@@ -65,11 +78,12 @@ async function checkForUpdate() {
   try {
     const info = await Backend.CheckForUpdate();
     if (!info || !info.available) return;
+    if (localStorage.getItem(skipUpdateKey(info.latestVersion)) === "1") return;
     updateInfo = info;
     $("updateVer").textContent = `${info.currentVersion} → ${info.latestVersion}`;
-    updMsg(info.assetName ? "" : "No installer for this system — use Open page.", "");
+    updMsg(info.hasAsset ? "" : "No installer for this system — use Open page.", "");
     // If no direct asset matched, the green button just opens the page.
-    $("updateYes").textContent = info.assetName ? "Download & install" : "Open page";
+    $("updateYes").textContent = info.hasAsset ? "Download & install" : "Open page";
     $("updateBanner").hidden = false;
   } catch (e) {
     /* offline or rate-limited — silently ignore on startup */
@@ -78,8 +92,8 @@ async function checkForUpdate() {
 
 async function onUpdate() {
   if (!updateInfo) return;
-  // No matched asset → open the release page (guaranteed to work).
-  if (!updateInfo.assetName) {
+  // No matched asset → open the release page.
+  if (!updateInfo.hasAsset) {
     Backend.OpenURL(updateInfo.htmlURL);
     return;
   }

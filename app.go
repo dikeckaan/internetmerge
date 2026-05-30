@@ -142,8 +142,11 @@ func (a *App) DownloadAndApplyUpdate() error {
 	if info == nil {
 		return fmt.Errorf("no update info; check for updates first")
 	}
-	if info.AssetURL == "" {
-		return fmt.Errorf("no downloadable asset for this system (%s)", info.AssetName)
+	if !info.Available {
+		return fmt.Errorf("no newer update available")
+	}
+	if !info.HasAsset || info.AssetURL == "" {
+		return fmt.Errorf("no downloadable asset for this system; open the release page")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
