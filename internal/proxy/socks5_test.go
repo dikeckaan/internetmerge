@@ -72,6 +72,73 @@ func TestSOCKS5RelayEndToEnd(t *testing.T) {
 	}
 }
 
+// TestSOCKS4RelayEndToEnd verifies the SOCKS4 path that Windows' WinINET system
+// proxy uses (WinINET speaks SOCKS4, not SOCKS5). The client resolves DNS and
+// sends an IPv4 CONNECT.
+func TestSOCKS4RelayEndToEnd(t *testing.T) {
+	loop := "lo0"
+	if runtime.GOOS == "linux" {
+		loop = "lo"
+	}
+	dialer, err := bind.DialerForInterface(loop)
+	if err != nil {
+		t.Skipf("loopback %q not bindable: %v", loop, err)
+	}
+
+	const body = "hello-from-socks4"
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, body)
+	}))
+	defer backend.Close()
+
+	disp := &Dispatcher{links: []*Link{{IfName: loop, dialer: dialer, weight: 1, alive: true}}}
+	srv := NewServer(disp, stats.New())
+	go srv.ListenAndServe("127.0.0.1:0")
+	defer srv.Close()
+	waitForAddr(t, srv)
+
+	host, portStr, _ := net.SplitHostPort(backend.Listener.Addr().String())
+	port, _ := strconv.Atoi(portStr)
+	conn := socks4Dial(t, srv.Addr().String(), host, port)
+	defer conn.Close()
+
+	io.WriteString(conn, "GET / HTTP/1.0\r\nHost: "+host+"\r\n\r\n")
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+	got, _ := io.ReadAll(resp.Body)
+	if string(got) != body {
+		t.Fatalf("body = %q, want %q", got, body)
+	}
+}
+
+// socks4Connect performs a SOCKS4 CONNECT (IPv4 host) and returns the connection
+// ready for application data.
+func socks4Dial(t *testing.T, proxyAddr, host string, port int) net.Conn {
+	t.Helper()
+	c, err := net.Dial("tcp", proxyAddr)
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	ip := net.ParseIP(host).To4()
+	if ip == nil {
+		t.Fatalf("SOCKS4 test needs an IPv4 host, got %q", host)
+	}
+	req := []byte{socks4Version, socks4Connect, byte(port >> 8), byte(port)}
+	req = append(req, ip...)
+	req = append(req, 0x00) // empty USERID + null terminator
+	if _, err := c.Write(req); err != nil {
+		t.Fatal(err)
+	}
+	reply := make([]byte, 8)
+	if _, err := io.ReadFull(c, reply); err != nil || reply[1] != socks4Granted {
+		t.Fatalf("socks4 connect failed: err=%v reply=%v", err, reply)
+	}
+	return c
+}
+
 // TestCloseUnblocksIdleConnection is the regression test for the Stop freeze:
 // an established-but-idle relayed connection must not stop Close from returning.
 func TestCloseUnblocksIdleConnection(t *testing.T) {

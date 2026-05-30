@@ -49,7 +49,8 @@ func (a *App) ListInterfaces() ([]netif.Interface, error) {
 	return netif.List()
 }
 
-// NetworkServices returns macOS network service names usable with Set-Proxy.
+// NetworkServices returns the OS proxy targets usable with Start's ProxyServices
+// (macOS network service names; a single sentinel on Windows/Linux).
 func (a *App) NetworkServices() ([]string, error) {
 	svc, err := sysproxy.Services()
 	if err != nil {
@@ -71,8 +72,8 @@ func (a *App) Start(cfg StartConfig) error {
 	})
 }
 
-// AutoStart selects every usable interface, routes all macOS network services
-// through the proxy, and starts bonding — the one-click "Auto-bond" path.
+// AutoStart selects every usable interface, routes the OS system proxy through
+// the bonding proxy, and starts bonding — the one-click "Auto-bond" path.
 func (a *App) AutoStart() error {
 	ifaces, err := netif.UsableNames()
 	if err != nil {

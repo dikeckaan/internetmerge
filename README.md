@@ -36,19 +36,23 @@ server you control and is planned as a future phase (see below).
 | `internal/proxy`   | SOCKS5 server + smooth weighted round-robin dispatcher     |
 | `internal/health`  | Per-link latency probes → liveness + weights               |
 | `internal/stats`   | Live per-interface byte/connection counters                |
-| `internal/sysproxy`| Toggle the macOS system SOCKS proxy (`networksetup`)       |
+| `internal/sysproxy`| Toggle the OS SOCKS proxy (macOS/Windows/Linux)            |
 | `internal/engine`  | Start/stop lifecycle shared by the CLI and GUI             |
 
 ## Platform support
 
-| OS               | Socket→NIC binding      | System proxy toggle | GUI  |
-|------------------|-------------------------|---------------------|------|
-| macOS (arm/x64)  | `IP_BOUND_IF` ✅        | `networksetup` ✅   | ✅   |
-| Linux (arm/x64)  | `SO_BINDTODEVICE` ✅ †  | —                   | ✅   |
-| Windows (arm/x64)| `IP_UNICAST_IF` ✅      | —                   | ✅   |
+| OS               | Socket→NIC binding      | System proxy toggle            | GUI  |
+|------------------|-------------------------|--------------------------------|------|
+| macOS (arm/x64)  | `IP_BOUND_IF` ✅        | `networksetup` ✅              | ✅   |
+| Windows (x64)    | `IP_UNICAST_IF` ✅      | WinINET registry ✅ (no admin) | ✅   |
+| Linux (x64)      | `SO_BINDTODEVICE` ✅ †  | GNOME `gsettings` ✅ (best effort) | ✅ |
 
-† Linux binding needs `CAP_NET_RAW` (run with sudo/setcap). On Linux/Windows the
-SOCKS proxy is used directly by apps (no system-wide proxy toggle yet).
+† Linux binding needs `CAP_NET_RAW` (run with sudo/setcap).
+
+**SOCKS version note:** the local proxy speaks **both SOCKS5 and SOCKS4/4a**.
+This matters on Windows: its WinINET system proxy only speaks SOCKS4, so SOCKS4
+support is what makes "route system traffic" actually work there. Apps that
+ignore the OS proxy can always point at the SOCKS5 proxy directly.
 
 ## Download
 

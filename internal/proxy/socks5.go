@@ -32,7 +32,16 @@ const (
 	repCommandNotSupport = 0x07
 )
 
-// Server is a local SOCKS5 proxy that distributes each accepted connection
+// SOCKS4/4a protocol constants (the version Windows' WinINET system proxy
+// speaks — WinINET does NOT support SOCKS5, so we must accept SOCKS4 too).
+const (
+	socks4Version  = 0x04
+	socks4Connect  = 0x01
+	socks4Granted  = 0x5A // request granted
+	socks4Rejected = 0x5B // request rejected or failed
+)
+
+// Server is a local SOCKS5/SOCKS4 proxy that distributes each accepted connection
 // across the bonded interfaces chosen by its Dispatcher. Byte counts per
 // interface are recorded in Stats for the UI.
 type Server struct {
@@ -156,17 +165,82 @@ func (s *Server) handle(client net.Conn) {
 	defer client.Close()
 	_ = client.SetDeadline(time.Now().Add(30 * time.Second))
 
-	if err := s.handshake(client); err != nil {
+	// Peek the version byte to support both SOCKS5 (apps, macOS/Linux) and
+	// SOCKS4/4a (Windows' WinINET system proxy speaks SOCKS4, not SOCKS5).
+	var ver [1]byte
+	if _, err := io.ReadFull(client, ver[:]); err != nil {
 		return
 	}
-	host, port, err := s.readRequest(client)
+	switch ver[0] {
+	case socksVersion:
+		s.handleSOCKS5(client)
+	case socks4Version:
+		s.handleSOCKS4(client)
+	default:
+		s.Logger.Printf("socks: unsupported version 0x%02x", ver[0])
+	}
+}
+
+// handleSOCKS5 completes the SOCKS5 method negotiation and CONNECT request
+// (the leading version byte has already been consumed by handle).
+func (s *Server) handleSOCKS5(client net.Conn) {
+	if err := s.handshake5(client); err != nil {
+		return
+	}
+	host, port, err := s.readRequest5(client)
 	if err != nil {
+		return
+	}
+	s.connectAndRelay(client, host, port, func(code byte) {
+		s.reply5(client, code)
+	}, func() { s.reply5(client, repSuccess) })
+}
+
+// handleSOCKS4 parses a SOCKS4/4a CONNECT (version byte already consumed) and
+// relays. SOCKS4 carries an IPv4 address; SOCKS4a (DSTIP 0.0.0.x, x!=0) carries
+// a trailing hostname. There is no IPv6 in SOCKS4.
+func (s *Server) handleSOCKS4(client net.Conn) {
+	// CMD(1) + DSTPORT(2) + DSTIP(4) — the version byte is already read.
+	head := make([]byte, 7)
+	if _, err := io.ReadFull(client, head); err != nil {
+		return
+	}
+	if head[0] != socks4Connect {
+		s.reply4(client, socks4Rejected)
+		return
+	}
+	port := binary.BigEndian.Uint16(head[1:3])
+	ip := net.IPv4(head[3], head[4], head[5], head[6])
+
+	// USERID: null-terminated, discarded.
+	if _, err := readUntilNull(client, 256); err != nil {
+		s.reply4(client, socks4Rejected)
 		return
 	}
 
+	host := ip.String()
+	// SOCKS4a: DSTIP == 0.0.0.x with x != 0 → a hostname follows.
+	if head[3] == 0 && head[4] == 0 && head[5] == 0 && head[6] != 0 {
+		name, err := readUntilNull(client, 256)
+		if err != nil || name == "" {
+			s.reply4(client, socks4Rejected)
+			return
+		}
+		host = name
+	}
+
+	s.connectAndRelay(client, host, port, func(byte) {
+		s.reply4(client, socks4Rejected)
+	}, func() { s.reply4(client, socks4Granted) })
+}
+
+// connectAndRelay dials the target through a dispatcher-selected link and pipes
+// bytes both ways. onFail is called (with a SOCKS5 reply code, ignored by the
+// SOCKS4 path) when dialing fails; onOK is called to acknowledge before relay.
+func (s *Server) connectAndRelay(client net.Conn, host string, port uint16, onFail func(byte), onOK func()) {
 	link, err := s.Dispatcher.Pick()
 	if err != nil {
-		s.reply(client, repGeneralFailure)
+		onFail(repGeneralFailure)
 		return
 	}
 
@@ -175,8 +249,8 @@ func (s *Server) handle(client net.Conn) {
 	defer cancel()
 	remote, err := link.dialer.DialContext(ctx, "tcp", target)
 	if err != nil {
-		s.Logger.Printf("socks5: dial %s via %s failed: %v", target, link.IfName, err)
-		s.reply(client, repHostUnreachable)
+		s.Logger.Printf("socks: dial %s via %s failed: %v", target, link.IfName, err)
+		onFail(repHostUnreachable)
 		return
 	}
 	defer remote.Close()
@@ -188,9 +262,7 @@ func (s *Server) handle(client net.Conn) {
 	}
 	defer s.removeConn(remote)
 
-	if err := s.reply(client, repSuccess); err != nil {
-		return
-	}
+	onOK()
 
 	// Once relaying starts the transfer can be long-lived; drop the handshake
 	// deadline so large downloads are not cut off.
@@ -200,16 +272,37 @@ func (s *Server) handle(client net.Conn) {
 	s.relay(client, remote, link.IfName)
 }
 
-// handshake performs the SOCKS5 method-negotiation, accepting only "no auth".
-func (s *Server) handshake(c net.Conn) error {
-	header := make([]byte, 2)
-	if _, err := io.ReadFull(c, header); err != nil {
+// readUntilNull reads bytes until a 0x00 terminator (consumed, not returned) or
+// max bytes, whichever comes first.
+func readUntilNull(r io.Reader, max int) (string, error) {
+	buf := make([]byte, 0, 32)
+	one := make([]byte, 1)
+	for len(buf) < max {
+		if _, err := io.ReadFull(r, one); err != nil {
+			return "", err
+		}
+		if one[0] == 0 {
+			return string(buf), nil
+		}
+		buf = append(buf, one[0])
+	}
+	return "", fmt.Errorf("socks4: unterminated field over %d bytes", max)
+}
+
+// reply4 writes a SOCKS4 reply (VN=0, CD=code, then ignored port+ip).
+func (s *Server) reply4(c net.Conn, code byte) error {
+	_, err := c.Write([]byte{0x00, code, 0, 0, 0, 0, 0, 0})
+	return err
+}
+
+// handshake5 performs the SOCKS5 method-negotiation, accepting only "no auth".
+// The version byte has already been consumed by handle.
+func (s *Server) handshake5(c net.Conn) error {
+	var nmethods [1]byte
+	if _, err := io.ReadFull(c, nmethods[:]); err != nil {
 		return err
 	}
-	if header[0] != socksVersion {
-		return fmt.Errorf("socks5: bad version %d", header[0])
-	}
-	methods := make([]byte, int(header[1]))
+	methods := make([]byte, int(nmethods[0]))
 	if _, err := io.ReadFull(c, methods); err != nil {
 		return err
 	}
@@ -220,8 +313,8 @@ func (s *Server) handshake(c net.Conn) error {
 	return nil
 }
 
-// readRequest parses a CONNECT request and returns the target host and port.
-func (s *Server) readRequest(c net.Conn) (host string, port uint16, err error) {
+// readRequest5 parses a SOCKS5 CONNECT request and returns target host and port.
+func (s *Server) readRequest5(c net.Conn) (host string, port uint16, err error) {
 	head := make([]byte, 4)
 	if _, err = io.ReadFull(c, head); err != nil {
 		return
@@ -231,7 +324,7 @@ func (s *Server) readRequest(c net.Conn) (host string, port uint16, err error) {
 		return
 	}
 	if head[1] != cmdConnect {
-		s.reply(c, repCommandNotSupport)
+		s.reply5(c, repCommandNotSupport)
 		err = errors.New("socks5: only CONNECT supported")
 		return
 	}
@@ -272,8 +365,8 @@ func (s *Server) readRequest(c net.Conn) (host string, port uint16, err error) {
 	return
 }
 
-// reply sends a minimal SOCKS5 reply with a zero bind address.
-func (s *Server) reply(c net.Conn, code byte) error {
+// reply5 sends a minimal SOCKS5 reply with a zero bind address.
+func (s *Server) reply5(c net.Conn, code byte) error {
 	_, err := c.Write([]byte{socksVersion, code, 0x00, atypIPv4, 0, 0, 0, 0, 0, 0})
 	return err
 }
