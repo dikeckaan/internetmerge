@@ -115,12 +115,15 @@ jobs:
       - name: Package artifact (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        # 7z isn't on the Git-Bash PATH on windows runners (exit 127);
-        # Compress-Archive is always available.
+        # Glob whatever .exe Wails produced (its exact name varies), and use
+        # Compress-Archive (7z isn't reliably on the runner PATH).
         run: |
           $dist = "$env:GITHUB_WORKSPACE/dist"
           New-Item -ItemType Directory -Force -Path $dist | Out-Null
-          Compress-Archive -Path build/bin/InternetMerge.exe -DestinationPath "$dist/InternetMerge-${{ matrix.name }}.zip" -Force
+          Get-ChildItem -Recurse build/bin
+          $exe = Get-ChildItem -Path build/bin -Filter *.exe -Recurse | Select-Object -First 1
+          if (-not $exe) { throw "no .exe found under build/bin" }
+          Compress-Archive -Path $exe.FullName -DestinationPath "$dist/InternetMerge-${{ matrix.name }}.zip" -Force
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
