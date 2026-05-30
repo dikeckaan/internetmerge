@@ -4,7 +4,8 @@ name: build
 # the artifacts to a GitHub Release when a v* tag is pushed.
 #
 # Wails GUI apps need CGO and cannot be reliably cross-compiled, so every GUI
-# target is built on its own native runner.
+# target is built on its own native runner. arm64 Windows/Linux have no working
+# hosted GUI toolchain, so they ship as the headless CGO-free CLI.
 on:
   push:
     branches: [main]
@@ -16,8 +17,7 @@ permissions:
   contents: write
 
 env:
-  # The windows-11-arm runner's git tripped Go's build-time VCS stamping
-  # ("error obtaining VCS status"); disabling it is harmless and consistent.
+  # windows runners tripped Go's build-time VCS stamping; disabling is harmless.
   GOFLAGS: -buildvcs=false
 
 jobs:
@@ -38,7 +38,7 @@ jobs:
             GOOS=${t%/*} GOARCH=${t#*/} go build ./...
           done
 
-  # Native GUI builds (the targets that have GitHub-hosted runners).
+  # Native GUI builds.
   build:
     needs: test
     strategy:
@@ -51,9 +51,6 @@ jobs:
           - name: windows-amd64
             os: windows-latest
             platform: windows/amd64
-          - name: windows-arm64
-            os: windows-11-arm
-            platform: windows/arm64
           - name: linux-amd64
             os: ubuntu-22.04
             platform: linux/amd64
@@ -84,20 +81,20 @@ jobs:
 
       - name: Install Wails
         shell: bash
-        # Pin to the version in go.mod; @latest pulled inconsistent CLI versions
-        # across matrix jobs.
         run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
 
       - name: Build (Wails)
         shell: bash
-        # -s skips the frontend build: our frontend is pre-built static files in
-        # frontend/dist, and re-bundling them triggered esbuild CSS-parse errors
-        # ("Unexpected token Function") on the Linux/Windows runners.
-        # On Linux, Wails v2.12 needs the webkit2_41 build tag (4.0 is dropped).
+        # -s skips the frontend build (frontend/dist is pre-built static; letting
+        # Wails re-bundle triggered esbuild CSS-parse errors). On Linux, Wails
+        # v2.12 needs the webkit2_41 build tag. On Windows the output name must
+        # carry the .exe extension or packaging can't find it.
         run: |
           TAGS=""
+          OUT="InternetMerge"
           if [ "${{ runner.os }}" = "Linux" ]; then TAGS="-tags webkit2_41"; fi
-          wails build -platform ${{ matrix.platform }} -s -clean $TAGS -o InternetMerge
+          if [ "${{ runner.os }}" = "Windows" ]; then OUT="InternetMerge.exe"; fi
+          wails build -platform ${{ matrix.platform }} -s -clean $TAGS -o "$OUT"
 
       - name: Package artifact (Unix)
         if: runner.os != 'Windows'
@@ -115,15 +112,14 @@ jobs:
       - name: Package artifact (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        # Glob whatever .exe Wails produced (its exact name varies), and use
-        # Compress-Archive (7z isn't reliably on the runner PATH).
         run: |
           $dist = "$env:GITHUB_WORKSPACE/dist"
           New-Item -ItemType Directory -Force -Path $dist | Out-Null
           Get-ChildItem -Recurse build/bin
           $exe = Get-ChildItem -Path build/bin -Filter *.exe -Recurse | Select-Object -First 1
           if (-not $exe) { throw "no .exe found under build/bin" }
-          Compress-Archive -Path $exe.FullName -DestinationPath "$dist/InternetMerge-${{ matrix.name }}.zip" -Force
+          $zip = Join-Path $dist "InternetMerge-${{ matrix.name }}.zip"
+          Compress-Archive -LiteralPath $exe.FullName -DestinationPath $zip -Force
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -137,32 +133,42 @@ jobs:
         with:
           files: dist/*
 
-  # linux/arm64 ships as a headless CLI: the only GitHub-hosted arm64 Linux
-  # runner (ubuntu-24.04-arm) cannot install webkit2gtk for the Wails GUI, so we
-  # cross-compile the CGO-free CLI on x64 instead.
-  linux-arm64-cli:
+  # arm64 builds: no working hosted GUI toolchain (no Linux arm64 webkit; Windows
+  # arm64 has no cgo cross-toolchain), so ship the CGO-free headless CLI built on
+  # an x64 runner.
+  arm64-cli:
     needs: test
     runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-arm64-cli
+            goos: linux
+            ext: ""
+          - name: windows-arm64-cli
+            goos: windows
+            ext: ".exe"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: Cross-compile CLI for linux/arm64
+      - name: Cross-compile CLI for ${{ matrix.goos }}/arm64
         env:
-          GOOS: linux
+          GOOS: ${{ matrix.goos }}
           GOARCH: arm64
           CGO_ENABLED: "0"
-        run: go build -o InternetMerge ./cmd/internetmerge
+        run: go build -o "InternetMerge${{ matrix.ext }}" ./cmd/internetmerge
       - name: Package artifact
         run: |
           DIST="$GITHUB_WORKSPACE/dist"
           mkdir -p "$DIST"
-          tar czf "$DIST/InternetMerge-linux-arm64-cli.tar.gz" InternetMerge
+          tar czf "$DIST/InternetMerge-${{ matrix.name }}.tar.gz" "InternetMerge${{ matrix.ext }}"
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: InternetMerge-linux-arm64-cli
+          name: InternetMerge-${{ matrix.name }}
           path: dist/*
       - name: Attach to release
         if: startsWith(github.ref, 'refs/tags/v')
