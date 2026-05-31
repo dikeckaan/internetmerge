@@ -11,6 +11,9 @@ let proxyServices = []; // OS proxy targets to route (from backend)
 let lastBytes = {}; // ifName -> {up,down} for rate calc
 let lastTs = 0;
 let peakRate = 1; // for relative link bars
+let curMode = "loadbalance"; // current dispatch mode
+let cfg = null; // persisted config from the backend
+let rulesDraft = []; // editable copy of host rules
 
 function backend() {
   return window.go && window.go.main && window.go.main.App;
@@ -35,6 +38,113 @@ function wireButtons() {
     if (updateInfo && updateInfo.htmlURL) Backend.OpenURL(updateInfo.htmlURL);
   });
   on("updateYes", "click", onUpdate);
+
+  // Mode selector.
+  document.querySelectorAll("#modeSel button").forEach((b) =>
+    b.addEventListener("click", () => setMode(b.dataset.mode))
+  );
+  // Rules.
+  on("addRuleBtn", "click", () => {
+    rulesDraft.push({ hostGlob: "", port: 0, action: "direct", ifName: "" });
+    renderRules();
+  });
+  // Settings toggles.
+  on("autoAdd", "change", (e) => Backend.SetAutoAddNewLinks($("autoAdd").checked));
+  on("startOnLogin", "change", () => Backend.SetStartOnLogin($("startOnLogin").checked).catch((err) => showError("Login item: " + err)));
+  on("minTray", "change", () => Backend.SetMinimizeToTray($("minTray").checked));
+  // Hotplug events.
+  if (window.runtime && window.runtime.EventsOn) {
+    window.runtime.EventsOn("links-changed", onLinksChanged);
+  }
+  on("hotplugDismiss", "click", () => ($("hotplugBanner").hidden = true));
+  on("hotplugAdd", "click", () => {
+    if (pendingLink) Backend.AddInterface(pendingLink).catch((e) => showError("Add link: " + e));
+    $("hotplugBanner").hidden = true;
+  });
+}
+
+// on accepts (id, event, handler); handler may ignore the event arg.
+function setMode(mode) {
+  curMode = mode === "failover" ? "failover" : "loadbalance";
+  syncModeSelector();
+  if (Backend) Backend.SetMode(curMode);
+}
+
+function syncModeSelector() {
+  document.querySelectorAll("#modeSel button").forEach((b) =>
+    b.classList.toggle("seg-on", b.dataset.mode === curMode)
+  );
+}
+
+let pendingLink = null;
+function onLinksChanged(ev) {
+  if (!ev) return;
+  if (ev.kind === "available") {
+    pendingLink = ev.ifName;
+    $("hotplugName").textContent = (ev.label || ev.ifName) + " — add it to the bond?";
+    $("hotplugBanner").hidden = false;
+  } else if (ev.kind === "removed") {
+    // The status loop will drop it from the list; just refresh.
+    if (pendingLink === ev.ifName) $("hotplugBanner").hidden = true;
+  }
+  // "added" links appear automatically via the next status tick.
+}
+
+// --- rules UI ---
+
+function renderRules() {
+  const box = $("rulesList");
+  box.innerHTML = "";
+  if (!rulesDraft.length) {
+    box.innerHTML = '<div class="rules-empty">No rules — every connection goes through the bond. Add a rule to send a site/port direct, to a specific link, or to block it.</div>';
+  }
+  const ifOptions = (interfaces || [])
+    .filter((it) => it.up && it.ipv4)
+    .map((it) => `<option value="${it.name}">${escapeHtml(it.label || it.name)}</option>`)
+    .join("");
+  rulesDraft.forEach((r, i) => {
+    const row = document.createElement("div");
+    row.className = "rule";
+    row.innerHTML = `
+      <input type="text" placeholder="*.example.com (host)" value="${escapeHtml(r.hostGlob || "")}" data-i="${i}" data-k="hostGlob" />
+      <input type="number" placeholder="port" value="${r.port || ""}" data-i="${i}" data-k="port" />
+      <select data-i="${i}" data-k="action">
+        <option value="direct" ${r.action === "direct" ? "selected" : ""}>Direct</option>
+        <option value="bond" ${r.action === "bond" ? "selected" : ""}>Bond</option>
+        <option value="link" ${r.action === "link" ? "selected" : ""}>Link…</option>
+        <option value="block" ${r.action === "block" ? "selected" : ""}>Block</option>
+      </select>
+      <select data-i="${i}" data-k="ifName" ${r.action === "link" ? "" : "disabled"}>
+        <option value="">(interface)</option>${ifOptions}
+      </select>
+      <button class="rm" data-i="${i}">✕</button>`;
+    box.appendChild(row);
+  });
+  // Wire rule inputs.
+  box.querySelectorAll("input,select").forEach((el) => {
+    el.addEventListener("change", () => {
+      const i = +el.dataset.i, k = el.dataset.k;
+      if (k === "port") rulesDraft[i][k] = parseInt(el.value, 10) || 0;
+      else rulesDraft[i][k] = el.value;
+      if (k === "action") renderRules();
+      saveRules();
+    });
+  });
+  box.querySelectorAll(".rm").forEach((el) =>
+    el.addEventListener("click", () => {
+      rulesDraft.splice(+el.dataset.i, 1);
+      renderRules();
+      saveRules();
+    })
+  );
+  // Pre-select the link dropdown values.
+  box.querySelectorAll('select[data-k="ifName"]').forEach((el) => {
+    el.value = rulesDraft[+el.dataset.i].ifName || "";
+  });
+}
+
+function saveRules() {
+  if (Backend) Backend.SetRules(rulesDraft, cfg ? cfg.appRules || [] : []);
 }
 
 // on safely attaches a listener, logging (not throwing) if the element is absent.
@@ -60,6 +170,20 @@ async function init() {
   } catch (_) {
     proxyServices = [];
   }
+
+  // Load persisted config and reflect it in the UI.
+  try {
+    cfg = (await Backend.GetConfig()) || {};
+    curMode = cfg.mode || "loadbalance";
+    rulesDraft = (cfg.rules || []).map((r) => ({ ...r }));
+    $("autoAdd").checked = !!cfg.autoAddNewLinks;
+    $("startOnLogin").checked = !!cfg.startOnLogin;
+    $("minTray").checked = !!cfg.minimizeToTray;
+    if (typeof cfg.routeSystem === "boolean") $("routeSystem").checked = cfg.routeSystem;
+    syncModeSelector();
+    renderRules();
+    if (isWindows()) $("appRuleNote").hidden = false;
+  } catch (_) {}
 
   if (window.runtime && window.runtime.EventsOn) {
     window.runtime.EventsOn("status", onStatus);
@@ -282,6 +406,8 @@ function onStatus(st) {
   $("heroLinks").textContent = active;
   $("heroConns").textContent = totConns;
 
+  curMode = st.mode || curMode;
+  syncModeSelector();
   renderLiveLinks(rows);
 }
 
@@ -291,25 +417,74 @@ function renderLiveLinks(rows) {
   rows
     .sort((a, b) => b.dRate - a.dRate)
     .forEach(({ l, dRate, uRate }) => {
-      const state = l.alive ? "up" : "down";
-      const badge = l.alive
+      const state = !l.enabled ? "idle" : l.alive ? "up" : "down";
+      const badge = !l.enabled
+        ? '<span class="badge unavail">off</span>'
+        : l.alive
         ? '<span class="badge active">active</span>'
         : '<span class="badge dead">no internet</span>';
       const barPct = Math.min(100, (dRate / peakRate) * 100);
       const div = document.createElement("div");
-      div.className = "link" + (l.alive ? "" : " off");
+      div.className = "link" + (l.enabled && l.alive ? "" : " off");
+
+      // Controls: enable toggle, Auto/Manual + slider (load-balance) or priority (failover).
+      let ctrl = "";
+      if (curMode === "failover") {
+        ctrl = `<div class="prio">prio <input type="number" min="0" max="99" value="${l.priority}" data-if="${l.ifName}" class="prio-in" /></div>`;
+      } else {
+        const slider =
+          `<input type="range" min="1" max="10" value="${l.weight}" class="wslider" data-if="${l.ifName}" ${l.manual ? "" : "disabled"} />` +
+          `<span class="wval">${l.weight}</span>`;
+        ctrl = `<div class="wmode">
+            <select class="wmode-sel" data-if="${l.ifName}">
+              <option value="auto" ${l.manual ? "" : "selected"}>Auto</option>
+              <option value="manual" ${l.manual ? "selected" : ""}>Manual</option>
+            </select>${slider}
+          </div>`;
+      }
+
       div.innerHTML = `
         <span class="dot ${state}"></span>
         <div class="link-main">
           <div class="link-name">${escapeHtml(l.label || l.ifName)} ${badge}</div>
-          <div class="link-meta">${l.ifName} · ${l.connections} conn · weight ${l.weight}</div>
+          <div class="link-meta">${l.ifName} · ${l.connections} conn</div>
         </div>
         <div class="link-stats">
           <div class="link-rate">${rate(dRate)} <span class="u">↓</span> &nbsp; ${rate(uRate)} <span class="u">↑</span></div>
           <div class="link-bar"><span style="width:${barPct}%"></span></div>
+        </div>
+        <div class="link-controls">
+          ${ctrl}
+          <label class="toggle" title="Enable / disable">
+            <input type="checkbox" class="en-in" data-if="${l.ifName}" ${l.enabled ? "checked" : ""} />
+            <span class="track"></span>
+          </label>
         </div>`;
       box.appendChild(div);
     });
+  wireLinkControls();
+}
+
+// wireLinkControls attaches handlers to the per-link inputs just rendered.
+function wireLinkControls() {
+  document.querySelectorAll(".en-in").forEach((el) =>
+    el.addEventListener("change", () => Backend.SetLinkEnabled(el.dataset.if, el.checked))
+  );
+  document.querySelectorAll(".wmode-sel").forEach((el) =>
+    el.addEventListener("change", () => {
+      Backend.SetLinkManual(el.dataset.if, el.value === "manual");
+    })
+  );
+  document.querySelectorAll(".wslider").forEach((el) => {
+    el.addEventListener("input", () => {
+      const v = el.nextElementSibling;
+      if (v) v.textContent = el.value;
+    });
+    el.addEventListener("change", () => Backend.SetLinkWeight(el.dataset.if, parseInt(el.value, 10)));
+  });
+  document.querySelectorAll(".prio-in").forEach((el) =>
+    el.addEventListener("change", () => Backend.SetLinkPriority(el.dataset.if, parseInt(el.value, 10) || 0))
+  );
 }
 
 // --- helpers ---
@@ -323,6 +498,9 @@ function splitRate(bps) {
 function rate(bps) {
   const [v, u] = splitRate(bps);
   return v + " " + u;
+}
+function isWindows() {
+  return /win/i.test(navigator.platform || navigator.userAgent || "");
 }
 function showError(msg) { const e = $("errmsg"); e.textContent = msg; e.hidden = false; }
 function hideError() { $("errmsg").hidden = true; }

@@ -8,10 +8,14 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/netip"
 	"strconv"
 	"sync"
 	"time"
 
+	"github.com/kaandikec/internetmerge/internal/bind"
+	"github.com/kaandikec/internetmerge/internal/proc"
+	"github.com/kaandikec/internetmerge/internal/rules"
 	"github.com/kaandikec/internetmerge/internal/stats"
 )
 
@@ -47,6 +51,9 @@ const (
 type Server struct {
 	Dispatcher *Dispatcher
 	Stats      *stats.Registry
+	// Rules, if set, decides per-connection routing (bond/link/direct/block).
+	// When nil, every connection bonds. Safe to swap via its own methods.
+	Rules *rules.Set
 	// Logger is used for per-connection diagnostics; defaults to the standard logger.
 	Logger *log.Logger
 
@@ -234,11 +241,22 @@ func (s *Server) handleSOCKS4(client net.Conn) {
 	}, func() { s.reply4(client, socks4Granted) })
 }
 
-// connectAndRelay dials the target through a dispatcher-selected link and pipes
-// bytes both ways. onFail is called (with a SOCKS5 reply code, ignored by the
-// SOCKS4 path) when dialing fails; onOK is called to acknowledge before relay.
+// connectAndRelay decides routing (bond/link/direct/block) for the target, dials
+// accordingly, and pipes bytes both ways. onFail is called (with a SOCKS5 reply
+// code, ignored by the SOCKS4 path) when the connection can't be made; onOK is
+// called to acknowledge before relay.
 func (s *Server) connectAndRelay(client net.Conn, host string, port uint16, onFail func(byte), onOK func()) {
-	link, err := s.Dispatcher.Pick()
+	// Resolve the routing decision: app rules (Windows) + host/port rules.
+	dec := rules.Decision{Action: rules.Bond}
+	if s.Rules != nil {
+		dec = s.Rules.Resolve(host, port, s.ownerExe(client))
+	}
+	if dec.Action == rules.Block {
+		onFail(repGeneralFailure)
+		return
+	}
+
+	dialer, ifName, err := s.dialerForDecision(dec)
 	if err != nil {
 		onFail(repGeneralFailure)
 		return
@@ -247,9 +265,9 @@ func (s *Server) connectAndRelay(client net.Conn, host string, port uint16, onFa
 	target := net.JoinHostPort(host, strconv.Itoa(int(port)))
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
-	remote, err := link.dialer.DialContext(ctx, "tcp", target)
+	remote, err := dialer.DialContext(ctx, "tcp", target)
 	if err != nil {
-		s.Logger.Printf("socks: dial %s via %s failed: %v", target, link.IfName, err)
+		s.Logger.Printf("socks: dial %s via %s failed: %v", target, ifName, err)
 		onFail(repHostUnreachable)
 		return
 	}
@@ -269,7 +287,45 @@ func (s *Server) connectAndRelay(client net.Conn, host string, port uint16, onFa
 	_ = client.SetDeadline(time.Time{})
 	_ = remote.SetDeadline(time.Time{})
 
-	s.relay(client, remote, link.IfName)
+	s.relay(client, remote, ifName)
+}
+
+// dialerForDecision returns the dialer and a label for a routing decision:
+//   - bond:   a dispatcher-selected bonded link
+//   - link:   the dialer bound to a specific interface (falls back to bond)
+//   - direct: an unbound dialer using the OS default route
+func (s *Server) dialerForDecision(dec rules.Decision) (*net.Dialer, string, error) {
+	switch dec.Action {
+	case rules.Direct:
+		return &net.Dialer{Timeout: bind.DefaultTimeout}, "direct", nil
+	case rules.Link:
+		if d, ok := s.Dispatcher.DialerFor(dec.IfName); ok {
+			return d, dec.IfName, nil
+		}
+		// Pinned interface not available — fall back to the bond.
+		fallthrough
+	default: // bond
+		link, err := s.Dispatcher.Pick()
+		if err != nil {
+			return nil, "", err
+		}
+		return link.dialer, link.IfName, nil
+	}
+}
+
+// ownerExe best-effort resolves the executable owning the client connection
+// (Windows only; "" elsewhere or on failure).
+func (s *Server) ownerExe(client net.Conn) string {
+	ta, ok := client.RemoteAddr().(*net.TCPAddr)
+	if !ok {
+		return ""
+	}
+	ap, ok := netip.AddrFromSlice(ta.IP)
+	if !ok {
+		return ""
+	}
+	exe, _ := proc.OwnerExe(netip.AddrPortFrom(ap, uint16(ta.Port)))
+	return exe
 }
 
 // readUntilNull reads bytes until a 0x00 terminator (consumed, not returned) or

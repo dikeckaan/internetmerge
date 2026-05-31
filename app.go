@@ -8,6 +8,8 @@ import (
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
+	"github.com/kaandikec/internetmerge/internal/autostart"
+	"github.com/kaandikec/internetmerge/internal/config"
 	"github.com/kaandikec/internetmerge/internal/engine"
 	"github.com/kaandikec/internetmerge/internal/netif"
 	"github.com/kaandikec/internetmerge/internal/sysproxy"
@@ -38,6 +40,10 @@ func (a *App) startup(ctx context.Context) {
 	if err := sysproxy.Cleanup(); err != nil {
 		runtime.LogWarningf(ctx, "sysproxy cleanup: %v", err)
 	}
+	// Forward hotplug link changes to the frontend.
+	a.eng.OnLinks = func(ev engine.LinkEvent) {
+		runtime.EventsEmit(a.ctx, "links-changed", ev)
+	}
 	go a.statusLoop()
 }
 
@@ -45,6 +51,32 @@ func (a *App) startup(ctx context.Context) {
 // OS proxy settings are restored.
 func (a *App) shutdown(ctx context.Context) {
 	_ = a.eng.Stop()
+}
+
+// beforeClose runs when the user closes the window. If "minimize to tray" is on
+// AND bonding is active, we hide the window and keep running (returning true
+// prevents the quit); otherwise we allow the app to exit. This keeps the bond
+// alive in the background without a full native tray menu.
+func (a *App) beforeClose(ctx context.Context) (prevent bool) {
+	c := a.eng.Conf()
+	if c.MinimizeToTray && a.eng.Running() {
+		runtime.WindowHide(ctx)
+		return true
+	}
+	return false
+}
+
+// Show brings the window back (used by the frontend / future tray).
+func (a *App) Show() { runtime.WindowShow(a.ctx) }
+
+// Quit fully exits the app (restoring proxy via shutdown).
+func (a *App) Quit() { runtime.Quit(a.ctx) }
+
+// SetMinimizeToTray persists the close-to-tray preference.
+func (a *App) SetMinimizeToTray(on bool) error {
+	c := a.eng.Conf()
+	c.MinimizeToTray = on
+	return config.Save(c)
 }
 
 // StartConfig is the payload the frontend sends to begin bonding.
@@ -110,6 +142,50 @@ func (a *App) Stop() error {
 // Status returns the current engine status (also pushed via events).
 func (a *App) Status() engine.Status {
 	return a.eng.Status()
+}
+
+// --- per-link / rules / settings (bound to the frontend) ---
+
+// GetConfig returns the persisted user config for the UI to render.
+func (a *App) GetConfig() *config.Config { return a.eng.Conf() }
+
+// SetLinkEnabled toggles a bonded link on/off.
+func (a *App) SetLinkEnabled(ifName string, on bool) { a.eng.SetLinkEnabled(ifName, on) }
+
+// SetLinkWeight sets a manual weight (1..10) for a link (enters manual mode).
+func (a *App) SetLinkWeight(ifName string, weight int) { a.eng.SetLinkWeight(ifName, weight) }
+
+// SetLinkManual switches a link between auto and manual weight modes.
+func (a *App) SetLinkManual(ifName string, manual bool) { a.eng.SetLinkManual(ifName, manual) }
+
+// SetLinkPriority sets a link's failover priority (higher = preferred).
+func (a *App) SetLinkPriority(ifName string, p int) { a.eng.SetLinkPriority(ifName, p) }
+
+// SetMode switches the dispatcher mode ("loadbalance" | "failover").
+func (a *App) SetMode(mode string) { a.eng.SetMode(mode) }
+
+// SetAutoAddNewLinks controls whether hotplugged NICs are bonded automatically.
+func (a *App) SetAutoAddNewLinks(on bool) { a.eng.SetAutoAddNewLinks(on) }
+
+// AddInterface bonds a newly-detected interface the user approved.
+func (a *App) AddInterface(ifName string) error { return a.eng.AddInterface(ifName) }
+
+// RemoveInterface drops an interface from the bond.
+func (a *App) RemoveInterface(ifName string) error { return a.eng.RemoveInterface(ifName) }
+
+// SetRules replaces the host/port and per-app routing rules.
+func (a *App) SetRules(host []config.Rule, apps []config.AppRule) {
+	a.eng.SetRules(host, apps)
+}
+
+// SetStartOnLogin enables/disables launching InternetMerge at login.
+func (a *App) SetStartOnLogin(on bool) error {
+	if err := autostart.Set(on); err != nil {
+		return err
+	}
+	c := a.eng.Conf()
+	c.StartOnLogin = on
+	return config.Save(c)
 }
 
 // AppVersion returns the running build's version string (e.g. "v0.4.0" or "dev").

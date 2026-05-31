@@ -30,6 +30,18 @@
         </div>
       </section>
 
+      <!-- HOTPLUG banner (a new connection appeared) -->
+      <section id="hotplugBanner" class="update hotplug" hidden>
+        <div class="update-text">
+          <b>New connection detected</b>
+          <span id="hotplugName"></span>
+        </div>
+        <div class="update-actions">
+          <button id="hotplugDismiss" class="btn btn-ghost btn-sm">Ignore</button>
+          <button id="hotplugAdd" class="btn btn-go btn-sm">Add to bond</button>
+        </div>
+      </section>
+
       <!-- HERO: big primary action + live total -->
       <section class="hero">
         <div class="hero-total">
@@ -57,15 +69,50 @@
       <section class="card">
         <div class="card-head">
           <h2>Your connections</h2>
-          <button id="refreshBtn" class="btn btn-ghost btn-sm" title="Rescan">⟳ Rescan</button>
+          <div class="card-head-right">
+            <div id="modeSel" class="seg" title="How traffic is spread">
+              <button data-mode="loadbalance" class="seg-on">Load-balance</button>
+              <button data-mode="failover">Failover</button>
+            </div>
+            <button id="refreshBtn" class="btn btn-ghost btn-sm" title="Rescan">⟳</button>
+          </div>
         </div>
         <div id="linkList" class="links">Scanning…</div>
+      </section>
+
+      <!-- RULES: route by destination / app -->
+      <section class="card">
+        <div class="card-head">
+          <h2>Routing rules</h2>
+          <button id="addRuleBtn" class="btn btn-ghost btn-sm">+ Add rule</button>
+        </div>
+        <div id="rulesList" class="rules-list"></div>
+        <p class="adv-note" id="appRuleNote" hidden>
+          App rules (by program) apply on Windows only — connections from apps that
+          ignore the proxy can't be matched.
+        </p>
+      </section>
+
+      <!-- SETTINGS -->
+      <section class="card">
         <details class="adv">
-          <summary>Advanced</summary>
+          <summary>Settings</summary>
           <div class="adv-body">
             <label class="adv-row">
               <span>Route system traffic through the proxy</span>
               <input type="checkbox" id="routeSystem" checked />
+            </label>
+            <label class="adv-row">
+              <span>Automatically add new connections to the bond</span>
+              <input type="checkbox" id="autoAdd" />
+            </label>
+            <label class="adv-row">
+              <span>Start InternetMerge at login</span>
+              <input type="checkbox" id="startOnLogin" />
+            </label>
+            <label class="adv-row">
+              <span>Keep running in the background when the window is closed</span>
+              <input type="checkbox" id="minTray" />
             </label>
             <label class="adv-row">
               <span>Local proxy address</span>

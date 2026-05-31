@@ -6,6 +6,7 @@ package health
 import (
 	"context"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/kaandikec/internetmerge/internal/bind"
@@ -29,7 +30,8 @@ type Monitor struct {
 	Timeout    time.Duration
 	Logger     *log.Logger
 
-	interfaces []string
+	mu  sync.Mutex
+	ifs []string
 }
 
 // New creates a Monitor for the given interfaces.
@@ -40,8 +42,23 @@ func New(d *proxy.Dispatcher, interfaces []string) *Monitor {
 		Interval:   DefaultInterval,
 		Timeout:    DefaultTimeout,
 		Logger:     log.Default(),
-		interfaces: interfaces,
+		ifs:        append([]string(nil), interfaces...),
 	}
+}
+
+// SetInterfaces replaces the probed interface set (used when links are added or
+// removed at runtime by the hotplug watcher).
+func (m *Monitor) SetInterfaces(interfaces []string) {
+	m.mu.Lock()
+	m.ifs = append([]string(nil), interfaces...)
+	m.mu.Unlock()
+}
+
+// interfaces returns a snapshot of the probed interface names.
+func (m *Monitor) interfaces() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string(nil), m.ifs...)
 }
 
 // Run probes on a ticker until ctx is cancelled. It performs one immediate
@@ -61,15 +78,22 @@ func (m *Monitor) Run(ctx context.Context) {
 }
 
 func (m *Monitor) probeAll(ctx context.Context) {
-	for _, ifName := range m.interfaces {
+	for _, ifName := range m.interfaces() {
 		latency, err := m.probe(ctx, ifName)
+		// Liveness is always tracked. Weight is only auto-adjusted when the link
+		// is NOT in manual mode, so a user's manual weight is never clobbered.
+		manual := m.Dispatcher.IsManual(ifName)
 		if err != nil {
 			m.Dispatcher.SetAlive(ifName, false)
-			m.Dispatcher.SetWeight(ifName, 0)
+			if !manual {
+				m.Dispatcher.SetWeight(ifName, 0)
+			}
 			continue
 		}
 		m.Dispatcher.SetAlive(ifName, true)
-		m.Dispatcher.SetWeight(ifName, weightFromLatency(latency))
+		if !manual {
+			m.Dispatcher.SetWeight(ifName, weightFromLatency(latency))
+		}
 	}
 }
 

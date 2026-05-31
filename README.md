@@ -101,11 +101,26 @@ go test ./...
 Includes an end-to-end test that runs the SOCKS5 proxy over loopback and verifies
 relaying + byte accounting, plus weighted-distribution unit tests.
 
+## Features
+
+- **Load-balance or Failover** modes — spread connections for more total speed,
+  or keep a primary link and fail over to a backup only when it drops.
+- **Per-link control** — enable/disable each link; set weight to **Auto**
+  (latency-based) or **Manual** (your fixed value, never overwritten); set
+  failover **priority**.
+- **Routing rules** — send a host/port **direct**, to a specific **link**, or
+  **block** it. On **Windows**, per-app rules (by executable) using the
+  connection's owning process.
+- **Auto-detect new connections** — plug in USB tethering / Wi-Fi and it's added
+  automatically (or you're asked); unplugged links leave the bond cleanly.
+- **Start at login** and **keep running in the background** (close-to-tray).
+- **No administrator rights** required for any of this.
+
 ## Roadmap
 
 - **Phase 1 (done):** server-less flow load balancing, all OSes, one-click Auto-bond.
-- **Phase 2:** true channel bonding via a self-hosted relay (VPS) + TUN tunnel,
-  so a single stream is split across links and reassembled remotely.
-- **Transparent mode:** `pf` redirect so all TCP traffic is captured without
-  per-app proxy configuration.
-- **System proxy toggle on Linux/Windows** (currently macOS only).
+- **Phase 2 (done):** per-link control, failover, routing rules, NIC hotplug,
+  Windows per-app routing, autostart, in-app updater.
+- **Phase 3:** true channel bonding via a self-hosted relay (VPS) + TUN tunnel,
+  so a single stream is split across links and reassembled remotely (needs
+  elevation). Transparent capture (`pf`/WFP) and a kill-switch would live here.

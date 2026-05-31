@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/kaandikec/internetmerge/internal/bind"
+	"github.com/kaandikec/internetmerge/internal/rules"
 	"github.com/kaandikec/internetmerge/internal/stats"
 )
 
@@ -36,7 +37,7 @@ func TestSOCKS5RelayEndToEnd(t *testing.T) {
 	defer backend.Close()
 
 	// Dispatcher with a single loopback-bound link.
-	disp := &Dispatcher{links: []*Link{{IfName: loop, dialer: dialer, weight: 1, alive: true}}}
+	disp := &Dispatcher{links: []*Link{{IfName: loop, dialer: dialer, weight: 1, alive: true, enabled: true}}}
 	reg := stats.New()
 	srv := NewServer(disp, reg)
 	go srv.ListenAndServe("127.0.0.1:0")
@@ -91,7 +92,7 @@ func TestSOCKS4RelayEndToEnd(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	disp := &Dispatcher{links: []*Link{{IfName: loop, dialer: dialer, weight: 1, alive: true}}}
+	disp := &Dispatcher{links: []*Link{{IfName: loop, dialer: dialer, weight: 1, alive: true, enabled: true}}}
 	srv := NewServer(disp, stats.New())
 	go srv.ListenAndServe("127.0.0.1:0")
 	defer srv.Close()
@@ -139,6 +140,91 @@ func socks4Dial(t *testing.T, proxyAddr, host string, port int) net.Conn {
 	return c
 }
 
+// TestRuleBlockRefusesConnection verifies a "block" rule rejects the CONNECT.
+func TestRuleBlockRefusesConnection(t *testing.T) {
+	loop := "lo0"
+	if runtime.GOOS == "linux" {
+		loop = "lo"
+	}
+	dialer, err := bind.DialerForInterface(loop)
+	if err != nil {
+		t.Skipf("loopback %q not bindable: %v", loop, err)
+	}
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer backend.Close()
+
+	disp := &Dispatcher{links: []*Link{{IfName: loop, dialer: dialer, weight: 1, alive: true, enabled: true}}}
+	srv := NewServer(disp, stats.New())
+	srv.Rules = rules.New()
+	srv.Rules.Replace([]rules.Rule{{HostGlob: "*", Action: rules.Block}}, nil)
+	go srv.ListenAndServe("127.0.0.1:0")
+	defer srv.Close()
+	waitForAddr(t, srv)
+
+	host, portStr, _ := net.SplitHostPort(backend.Listener.Addr().String())
+	port, _ := strconv.Atoi(portStr)
+
+	c, err := net.Dial("tcp", srv.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	c.Write([]byte{0x05, 0x01, 0x00})
+	io.ReadFull(c, make([]byte, 2))
+	req := []byte{0x05, 0x01, 0x00, 0x01}
+	req = append(req, net.ParseIP(host).To4()...)
+	req = append(req, byte(port>>8), byte(port))
+	c.Write(req)
+	resp := make([]byte, 10)
+	if _, err := io.ReadFull(c, resp); err != nil {
+		t.Fatalf("read reply: %v", err)
+	}
+	if resp[1] == repSuccess {
+		t.Fatal("blocked connection should not succeed")
+	}
+}
+
+// TestRuleDirectBypassesBinding verifies a "direct" rule relays via an unbound
+// dialer (no interface binding) and still works end to end.
+func TestRuleDirectBypassesBinding(t *testing.T) {
+	loop := "lo0"
+	if runtime.GOOS == "linux" {
+		loop = "lo"
+	}
+	dialer, err := bind.DialerForInterface(loop)
+	if err != nil {
+		t.Skipf("loopback %q not bindable: %v", loop, err)
+	}
+	const body = "direct-ok"
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, body)
+	}))
+	defer backend.Close()
+
+	disp := &Dispatcher{links: []*Link{{IfName: loop, dialer: dialer, weight: 1, alive: true, enabled: true}}}
+	srv := NewServer(disp, stats.New())
+	srv.Rules = rules.New()
+	srv.Rules.Replace([]rules.Rule{{HostGlob: "*", Action: rules.Direct}}, nil)
+	go srv.ListenAndServe("127.0.0.1:0")
+	defer srv.Close()
+	waitForAddr(t, srv)
+
+	host, portStr, _ := net.SplitHostPort(backend.Listener.Addr().String())
+	port, _ := strconv.Atoi(portStr)
+	conn := socks5Connect(t, srv.Addr().String(), host, port)
+	defer conn.Close()
+	io.WriteString(conn, "GET / HTTP/1.0\r\nHost: "+host+"\r\n\r\n")
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+	got, _ := io.ReadAll(resp.Body)
+	if string(got) != body {
+		t.Fatalf("body = %q, want %q", got, body)
+	}
+}
+
 // TestCloseUnblocksIdleConnection is the regression test for the Stop freeze:
 // an established-but-idle relayed connection must not stop Close from returning.
 func TestCloseUnblocksIdleConnection(t *testing.T) {
@@ -168,7 +254,7 @@ func TestCloseUnblocksIdleConnection(t *testing.T) {
 		}
 	}()
 
-	disp := &Dispatcher{links: []*Link{{IfName: loop, dialer: dialer, weight: 1, alive: true}}}
+	disp := &Dispatcher{links: []*Link{{IfName: loop, dialer: dialer, weight: 1, alive: true, enabled: true}}}
 	srv := NewServer(disp, stats.New())
 	go srv.ListenAndServe("127.0.0.1:0")
 	waitForAddr(t, srv)
