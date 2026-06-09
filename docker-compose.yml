@@ -1,0 +1,14 @@
+# One-command relay: `INTERNETMERGE_RELAY_KEY=... docker compose up -d`
+# (or put the key in a .env file next to this compose file).
+services:
+  relay:
+    build:
+      context: .
+      dockerfile: build/docker/Dockerfile
+    image: ghcr.io/dikeckaan/internetmerge:latest
+    restart: unless-stopped
+    ports:
+      - "7000:7000"
+    environment:
+      - "INTERNETMERGE_RELAY_KEY=${INTERNETMERGE_RELAY_KEY:?set INTERNETMERGE_RELAY_KEY (run: internetmerge relay --keygen)}"
+    command: ["relay", "--listen", ":7000"]

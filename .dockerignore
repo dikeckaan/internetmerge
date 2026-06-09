@@ -1,0 +1,6 @@
+build/bin
+dist
+frontend/node_modules
+.git
+*.dmg
+*.zip
