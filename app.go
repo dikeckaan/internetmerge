@@ -178,6 +178,15 @@ func (a *App) SetRules(host []config.Rule, apps []config.AppRule) {
 	a.eng.SetRules(host, apps)
 }
 
+// SetRelay updates the BYO relay settings and persists them. Takes effect on the
+// next Merge (Start).
+func (a *App) SetRelay(enabled bool, address, key string) error {
+	return a.eng.SetRelay(config.RelayConfig{Enabled: enabled, Address: address, Key: key})
+}
+
+// GetRelay returns the current relay settings for the UI.
+func (a *App) GetRelay() config.RelayConfig { return a.eng.GetRelay() }
+
 // SetStartOnLogin enables/disables launching InternetMerge at login.
 func (a *App) SetStartOnLogin(on bool) error {
 	if err := autostart.Set(on); err != nil {

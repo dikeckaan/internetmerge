@@ -7,11 +7,13 @@ package engine
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"log"
 	"sync"
 	"time"
 
+	"github.com/kaandikec/internetmerge/internal/bond"
 	"github.com/kaandikec/internetmerge/internal/config"
 	"github.com/kaandikec/internetmerge/internal/health"
 	"github.com/kaandikec/internetmerge/internal/netif"
@@ -56,6 +58,7 @@ type Engine struct {
 	proxyEnabled []string
 	labels       map[string]string // ifName -> friendly label, for Status
 	bonded       []string          // current bonded interface set
+	bondMux      *bond.Mux         // BYO relay mux when relay bonding is enabled
 	serveErr     error
 	serveErrMu   sync.Mutex
 
@@ -69,11 +72,27 @@ func New() *Engine {
 	return &Engine{Logger: log.Default(), conf: config.Load()}
 }
 
-// Config returns a copy of the persisted user config (for the UI to render).
+// Conf returns the live persisted user config pointer (for the UI to render).
 func (e *Engine) Conf() *config.Config {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.conf
+}
+
+// SetRelay updates the relay settings under the engine lock and persists them.
+func (e *Engine) SetRelay(rc config.RelayConfig) error {
+	e.mu.Lock()
+	e.conf.Relay = rc
+	snapshot := *e.conf
+	e.mu.Unlock()
+	return config.Save(&snapshot)
+}
+
+// GetRelay returns the current relay settings under the engine lock.
+func (e *Engine) GetRelay() config.RelayConfig {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.conf.Relay
 }
 
 // Start launches a bonding session. It returns an error if already running or
@@ -120,6 +139,31 @@ func (e *Engine) Start(cfg Config) error {
 	srv := proxy.NewServer(disp, reg)
 	srv.Logger = e.Logger
 	srv.Rules = rs
+
+	// If a BYO relay is configured, open a bonded mux over the enabled links and
+	// route Bond-decision connections through it. A dial failure is non-fatal:
+	// normal load-balancing/failover continues without the relay.
+	if e.conf.Relay.Enabled && e.conf.Relay.Address != "" {
+		var ifNames []string
+		for _, l := range disp.Links() {
+			if l.Enabled {
+				ifNames = append(ifNames, l.IfName)
+			}
+		}
+		key, err := base64.StdEncoding.DecodeString(e.conf.Relay.Key)
+		if len(ifNames) == 0 {
+			e.Logger.Printf("engine: relay bonding needs >=1 enabled link; bonding disabled")
+		} else if err != nil {
+			e.Logger.Printf("engine: relay key decode: %v (bonding disabled)", err)
+		} else if len(key) < 16 {
+			e.Logger.Printf("engine: relay key too short (%d bytes, need >=16); bonding disabled", len(key))
+		} else if mux, derr := bond.DialRelay(e.conf.Relay.Address, key, len(ifNames), ifNames); derr != nil {
+			e.Logger.Printf("engine: dial relay %q: %v (bonding disabled, load-balancing continues)", e.conf.Relay.Address, derr)
+		} else {
+			e.bondMux = mux
+			srv.Bond = mux
+		}
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -195,9 +239,11 @@ func (e *Engine) Stop() error {
 	srv := e.srv
 	cancel := e.cancel
 	proxyEnabled := e.proxyEnabled
+	mux := e.bondMux
 
 	e.running = false
 	e.disp = nil
+	e.bondMux = nil
 	e.srv = nil
 	e.reg = nil
 	e.mon = nil
@@ -214,6 +260,9 @@ func (e *Engine) Stop() error {
 	}
 	if cancel != nil {
 		cancel()
+	}
+	if mux != nil {
+		mux.Close()
 	}
 	if srv != nil {
 		return srv.Close()

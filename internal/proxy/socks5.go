@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/kaandikec/internetmerge/internal/bind"
+	"github.com/kaandikec/internetmerge/internal/bond"
 	"github.com/kaandikec/internetmerge/internal/proc"
 	"github.com/kaandikec/internetmerge/internal/rules"
 	"github.com/kaandikec/internetmerge/internal/stats"
@@ -56,6 +57,9 @@ type Server struct {
 	Rules *rules.Set
 	// Logger is used for per-connection diagnostics; defaults to the standard logger.
 	Logger *log.Logger
+	// Bond, when non-nil, routes Bond-decision connections through the relay mux
+	// (single-stream channel bonding) instead of dialing a single NIC.
+	Bond *bond.Mux
 
 	ln   net.Listener
 	wg   sync.WaitGroup
@@ -108,7 +112,9 @@ func (s *Server) ListenAndServe(addr string) error {
 	if err != nil {
 		return err
 	}
+	s.connMu.Lock()
 	s.ln = ln
+	s.connMu.Unlock()
 	s.Logger.Printf("socks5: listening on %s", ln.Addr())
 	for {
 		conn, err := ln.Accept()
@@ -135,10 +141,13 @@ func (s *Server) ListenAndServe(addr string) error {
 
 // Addr returns the actual listening address (useful when binding to :0 in tests).
 func (s *Server) Addr() net.Addr {
-	if s.ln == nil {
+	s.connMu.Lock()
+	ln := s.ln
+	s.connMu.Unlock()
+	if ln == nil {
 		return nil
 	}
-	return s.ln.Addr()
+	return ln.Addr()
 }
 
 // Close stops accepting, force-closes every live connection (which unblocks the
@@ -148,18 +157,19 @@ func (s *Server) Close() error {
 	var err error
 	s.once.Do(func() {
 		close(s.done)
-		if s.ln != nil {
-			err = s.ln.Close()
-		}
 		// Mark closing and snapshot the live connections under the lock, then
 		// close them outside the lock so handle()'s removeConn can still proceed.
 		s.connMu.Lock()
+		ln := s.ln
 		s.closing = true
 		live := make([]net.Conn, 0, len(s.conns))
 		for c := range s.conns {
 			live = append(live, c)
 		}
 		s.connMu.Unlock()
+		if ln != nil {
+			err = ln.Close()
+		}
 		for _, c := range live {
 			c.Close()
 		}
@@ -253,6 +263,19 @@ func (s *Server) connectAndRelay(client net.Conn, host string, port uint16, onFa
 	}
 	if dec.Action == rules.Block {
 		onFail(repGeneralFailure)
+		return
+	}
+
+	if dec.Action == rules.Bond && s.Bond != nil {
+		stream, err := s.Bond.OpenStream(host, port)
+		if err != nil {
+			onFail(repHostUnreachable)
+			return
+		}
+		onOK()
+		// Long-lived transfer: drop the handshake deadline.
+		_ = client.SetDeadline(time.Time{})
+		s.relayBond(client, stream)
 		return
 	}
 
@@ -450,6 +473,53 @@ func (s *Server) relay(client, remote net.Conn, ifName string) {
 		s.copyCounted(client, remote, ifName, false)
 		if cw, ok := client.(interface{ CloseWrite() error }); ok {
 			cw.CloseWrite()
+		}
+	}()
+	wg.Wait()
+}
+
+// relayBond pipes the client connection through a bonded relay stream, counting
+// bytes under the "bond" label. When either direction ends it closes both sides so
+// the paired goroutine cannot block forever.
+func (s *Server) relayBond(client net.Conn, stream io.ReadWriteCloser) {
+	s.Stats.OpenConn("bond")
+	defer s.Stats.CloseConn("bond")
+	var once sync.Once
+	closeBoth := func() { once.Do(func() { client.Close(); stream.Close() }) }
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		defer closeBoth()
+		buf := make([]byte, 32*1024)
+		for {
+			n, rerr := client.Read(buf)
+			if n > 0 {
+				if _, werr := stream.Write(buf[:n]); werr != nil {
+					return
+				}
+				s.Stats.AddUp("bond", uint64(n))
+			}
+			if rerr != nil {
+				return
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		defer closeBoth()
+		buf := make([]byte, 32*1024)
+		for {
+			n, rerr := stream.Read(buf)
+			if n > 0 {
+				if _, werr := client.Write(buf[:n]); werr != nil {
+					return
+				}
+				s.Stats.AddDown("bond", uint64(n))
+			}
+			if rerr != nil {
+				return
+			}
 		}
 	}()
 	wg.Wait()

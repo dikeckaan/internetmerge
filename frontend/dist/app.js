@@ -52,6 +52,8 @@ function wireButtons() {
   on("autoAdd", "change", (e) => Backend.SetAutoAddNewLinks($("autoAdd").checked));
   on("startOnLogin", "change", () => Backend.SetStartOnLogin($("startOnLogin").checked).catch((err) => showError("Login item: " + err)));
   on("minTray", "change", () => Backend.SetMinimizeToTray($("minTray").checked));
+  // Relay (Phase 3 BYO single-stream bonding) — save the three fields.
+  on("relay-save", "click", onRelaySave);
   // Hotplug events.
   if (window.runtime && window.runtime.EventsOn) {
     window.runtime.EventsOn("links-changed", onLinksChanged);
@@ -147,6 +149,29 @@ function saveRules() {
   if (Backend) Backend.SetRules(rulesDraft, cfg ? cfg.appRules || [] : []);
 }
 
+// --- relay (Phase 3 BYO single-stream bonding) ---
+
+function relayStatus(text, kind) {
+  const el = $("relay-status");
+  if (!el) return;
+  el.textContent = text || "";
+  el.className = "adv-note" + (kind ? " " + kind : "");
+  el.hidden = !text;
+}
+
+async function onRelaySave() {
+  if (!Backend) return;
+  const enabled = $("relay-enabled").checked;
+  const address = $("relay-address").value.trim();
+  const key = $("relay-key").value.trim();
+  try {
+    await Backend.SetRelay(enabled, address, key);
+    relayStatus("Saved — applies on next Merge.", "ok");
+  } catch (e) {
+    relayStatus("Save failed: " + e, "err");
+  }
+}
+
 // on safely attaches a listener, logging (not throwing) if the element is absent.
 function on(id, event, handler) {
   const el = $(id);
@@ -183,6 +208,14 @@ async function init() {
     syncModeSelector();
     renderRules();
     if (isWindows()) $("appRuleNote").hidden = false;
+  } catch (_) {}
+
+  // Load the relay (Phase 3) settings into the three fields.
+  try {
+    const r = (await Backend.GetRelay()) || {};
+    $("relay-enabled").checked = !!r.enabled;
+    $("relay-address").value = r.address || "";
+    $("relay-key").value = r.key || "";
   } catch (_) {}
 
   if (window.runtime && window.runtime.EventsOn) {
@@ -378,14 +411,22 @@ function onStatus(st) {
     $("heroUp").textContent = "0 KB/s";
     $("heroLinks").textContent = "0";
     $("heroConns").textContent = "0";
+    $("bondLine").hidden = true;
     renderLinkPicker();
     return;
   }
 
-  const links = st.links || [];
+  // The "bond" sample is bonded single-stream traffic (relay), not a NIC —
+  // pull it out so it gets its own labeled line instead of a per-link card.
+  const allLinks = st.links || [];
+  const bondSample = allLinks.find((l) => l.ifName === "bond");
+  const links = allLinks.filter((l) => l.ifName !== "bond");
+
   const now = Date.now();
   const dt = lastTs ? Math.max((now - lastTs) / 1000, 0.001) : 1;
   lastTs = now;
+
+  renderBondLine(bondSample, dt);
 
   let totDown = 0, totUp = 0, totConns = 0, active = 0;
   const rows = links.map((l) => {
@@ -409,6 +450,23 @@ function onStatus(st) {
   curMode = st.mode || curMode;
   syncModeSelector();
   renderLiveLinks(rows);
+}
+
+// renderBondLine shows bonded single-stream throughput from the "bond" sample.
+// It only appears once bonded traffic flows; absent until then.
+function renderBondLine(sample, dt) {
+  const line = $("bondLine");
+  if (!line) return;
+  if (!sample) {
+    line.hidden = true;
+    return;
+  }
+  const prev = lastBytes[sample.ifName] || { up: sample.bytesUp, down: sample.bytesDown };
+  const dRate = Math.max(0, (sample.bytesDown - prev.down) / dt);
+  const uRate = Math.max(0, (sample.bytesUp - prev.up) / dt);
+  lastBytes[sample.ifName] = { up: sample.bytesUp, down: sample.bytesDown };
+  $("bondRate").innerHTML = `${rate(dRate)} <span class="u">↓</span> &nbsp; ${rate(uRate)} <span class="u">↑</span>`;
+  line.hidden = false;
 }
 
 function renderLiveLinks(rows) {

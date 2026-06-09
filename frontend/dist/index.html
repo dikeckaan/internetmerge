@@ -78,6 +78,10 @@
           </div>
         </div>
         <div id="linkList" class="links">Scanning…</div>
+        <div id="bondLine" class="bond-line" hidden>
+          <span class="bond-label">Bonded (single-stream)</span>
+          <span id="bondRate" class="bond-rate"></span>
+        </div>
       </section>
 
       <!-- RULES: route by destination / app -->
@@ -121,6 +125,29 @@
             <p class="adv-note">
               Apps that ignore the system proxy can point at this SOCKS address directly.
             </p>
+
+            <div class="relay-sec">
+              <div class="relay-head">Relay (Phase 3 — single-stream bonding)</div>
+              <label class="adv-row">
+                <span>Send a single stream over your own relay (VPS)</span>
+                <input type="checkbox" id="relay-enabled" />
+              </label>
+              <label class="adv-row">
+                <span>Relay address</span>
+                <input type="text" id="relay-address" placeholder="your-vps-host:7000" spellcheck="false" />
+              </label>
+              <label class="adv-row">
+                <span>Relay key</span>
+                <input type="text" id="relay-key" placeholder="base64 key from install-relay.sh" spellcheck="false" />
+              </label>
+              <div class="adv-row">
+                <span class="adv-note" style="flex:1">
+                  Stand up a relay with <code>install-relay.sh</code> on a VPS, then paste its address and key here.
+                </span>
+                <button id="relay-save" class="btn btn-ghost btn-sm">Save</button>
+              </div>
+              <p id="relay-status" class="adv-note" hidden></p>
+            </div>
           </div>
         </details>
       </section>
