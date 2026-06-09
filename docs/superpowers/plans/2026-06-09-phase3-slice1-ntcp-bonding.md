@@ -12,6 +12,380 @@
 
 ---
 
+## ⚠️ Mandatory Corrections (from Codex adversarial review)
+
+These supersede the corresponding parts of the tasks below. Each task that one of
+these touches is marked `⚠️ See Correction <letter>`. Apply the correction; do not
+implement the naïve version.
+
+### Correction A — lazy stream registration (fixes a data-loss blocker in Task 7)
+
+`StreamData` can arrive on one flow *before* the `StreamOpen` arrives on another
+(frames travel on any flow). The naïve `m.get(id)` returns nil and **silently
+drops the data**. Register the stream lazily on first frame, and have `StreamOpen`
+attach the upstream exactly once.
+
+Replace `Mux.get` usage in `dispatch` with `getOrCreate`, and add an `opened`
+guard to `recvState`:
+
+```go
+// recvState gains an `opened` flag (guards onOpen exactly once).
+type recvState struct {
+	conn   *Conn
+	rb     *reasm
+	mu     sync.Mutex
+	opened bool
+	finOff uint64 // set when a FIN segment seen; 0 means "no FIN yet"
+	hasFin bool
+	localFIN, remoteFIN bool // both true => teardown (Correction B)
+}
+
+func (m *Mux) getOrCreate(id uint32) *recvState {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rs := m.streams[id]
+	if rs == nil {
+		rs = &recvState{conn: newConn(id, m), rb: newReasm(m.bufCap)}
+		m.streams[id] = rs
+	}
+	return rs
+}
+```
+
+In `dispatch`:
+- `StreamOpen`: `rs := m.getOrCreate(fr.StreamID)`; then under `m.mu` (or rs.mu)
+  set `rs.opened` once and call `m.onOpen(rs.conn, fr.Host, fr.Port)` only if it
+  was not already opened (ignore duplicate opens).
+- `StreamData`: `rs := m.getOrCreate(fr.StreamID)` (never nil now).
+
+On the **client** side `OpenStream` still pre-registers via `registerStream`, so
+`getOrCreate` simply returns the existing entry there. `getOrCreate` on inbound
+`StreamData` for an unknown id is only reachable on the relay (the client never
+receives data for a stream it didn't open), so it cannot spuriously create
+streams.
+
+### Correction B — half-close, not full teardown, on `Conn.Close` (fixes a blocker in Task 6)
+
+Task 8c calls `stream.Close()` to finish the **upload** and then keeps **reading
+the download**. The naïve `Conn.Close` calls `removeStream` immediately, so the
+response `StreamData` is dropped. `Close` must be write-side only; teardown
+happens when *both* directions have FINed.
+
+```go
+// Conn.Close: send FIN (recorded for resend — Correction F), mark local write
+// closed, but DO NOT removeStream. The mux removes the stream when both
+// localFIN and remoteFIN are set.
+func (c *Conn) Close() error {
+	c.sendMu.Lock()
+	if c.closed {
+		c.sendMu.Unlock()
+		return nil
+	}
+	c.closed = true
+	off := c.sendOff
+	c.unack = append(c.unack, segment{off: off, payload: nil, fin: true}) // resendable FIN
+	c.sendMu.Unlock()
+	_ = c.mux.sendData(c.id, off, nil, true)
+	c.mux.markLocalFIN(c.id)
+	return nil
+}
+```
+
+Add to `Mux`:
+
+```go
+func (m *Mux) markLocalFIN(id uint32) {
+	m.mu.Lock()
+	rs := m.streams[id]
+	if rs != nil {
+		rs.localFIN = true
+		if rs.remoteFIN {
+			delete(m.streams, id)
+		}
+	}
+	m.mu.Unlock()
+}
+
+func (m *Mux) markRemoteFIN(id uint32) {
+	m.mu.Lock()
+	rs := m.streams[id]
+	if rs != nil {
+		rs.remoteFIN = true
+		if rs.localFIN {
+			delete(m.streams, id)
+		}
+	}
+	m.mu.Unlock()
+}
+```
+
+### Correction C — reassembly must trim overlapping pending segments (fixes data-loss in Task 2)
+
+The naïve drain loop only looks up `pending[next]` by *exact* start offset, so a
+pending segment that *overlaps* the newly advanced `next` (e.g. pending `off=3`
+after delivering `0..5`) is never delivered and leaks. Replace the contiguous
+drain with a search that trims partial overlaps:
+
+```go
+// insert: after setting out for the off==next case (or any time next advances),
+// drain pending using this loop instead of the exact-key lookup:
+func (r *reasm) drain(out []byte) []byte {
+	for {
+		// exact next-start segment
+		if seg, ok := r.pending[r.next]; ok {
+			delete(r.pending, r.next)
+			r.held -= len(seg)
+			out = append(out, seg...)
+			r.next += uint64(len(seg))
+			continue
+		}
+		// overlapping earlier-start segment: off < next < off+len
+		var hitOff uint64
+		var hitSeg []byte
+		found := false
+		for off, seg := range r.pending {
+			if off < r.next && off+uint64(len(seg)) > r.next {
+				hitOff, hitSeg, found = off, seg, true
+				break
+			}
+		}
+		if !found {
+			break
+		}
+		delete(r.pending, hitOff)
+		r.held -= len(hitSeg)
+		trimmed := hitSeg[r.next-hitOff:]
+		out = append(out, trimmed...)
+		r.next += uint64(len(trimmed))
+	}
+	return out
+}
+```
+
+Use `out = r.drain(out)` in the `off == r.next` branch in place of the inline
+exact-key loop. Add `TestReasmOverlapTrim` to Task 2:
+
+```go
+func TestReasmOverlapTrim(t *testing.T) {
+	b := newReasm(1 << 20)
+	b.insert(3, []byte("def"))            // pending at 3
+	out, _ := b.insert(0, []byte("abcde")) // delivers 0..5, must also yield "f"
+	if string(out) != "abcdef" {
+		t.Fatalf("got %q want abcdef", out)
+	}
+	if b.held != 0 {
+		t.Fatalf("pending leak: held=%d", b.held)
+	}
+}
+```
+
+### Correction D — deliver EOF only when the FIN offset is contiguous (fixes premature EOF in Task 7)
+
+A FIN frame can arrive ahead of earlier data. Do **not** `deliverEOF()` on seeing
+`fr.Fin`; record the FIN offset and deliver EOF only once `contiguous()` reaches
+it. In `dispatch`'s `StreamData` case:
+
+```go
+rs.mu.Lock()
+out, err := rs.rb.insert(fr.Offset, fr.Payload)
+if fr.Fin {
+	rs.hasFin = true
+	rs.finOff = fr.Offset + uint64(len(fr.Payload))
+}
+contig := rs.rb.contiguous()
+eof := rs.hasFin && contig >= rs.finOff
+rs.mu.Unlock()
+if err != nil {
+	rs.conn.deliverErr(err)
+	return
+}
+if len(out) > 0 {
+	rs.conn.deliver(out)
+}
+// Emit a flow-control Ack for this stream (Correction F needs this on BOTH sides).
+_ = m.anyFlow().WriteFrame(&wire.Frame{Type: wire.Ack, StreamID: fr.StreamID, Contig: contig})
+if eof {
+	rs.conn.deliverEOF()
+	m.markRemoteFIN(fr.StreamID)
+}
+```
+
+### Correction E — bounded receive window (fixes unbounded memory in Task 6)
+
+`reasm`'s cap only bounds *out-of-order* bytes. Delivered-but-unread bytes in
+`Conn.rbuf` are unbounded if the SOCKS/upstream reader is slow. Add a receive
+window: `deliver` blocks (applying TCP backpressure up the flow) when `rbuf`
+exceeds the window; `Read` signals when it drains. This means a full stream
+throttles its shared flow — the documented Slice-1 multiplexing limitation
+(Slice 2 adds per-stream windows).
+
+```go
+// Conn gains a second cond on the same mutex:
+//   wcond *sync.Cond  // signalled by Read when rbuf drains
+// newConn: c.wcond = sync.NewCond(&c.rmu)
+
+const recvWindow = 4 << 20
+
+func (c *Conn) deliver(b []byte) {
+	c.rmu.Lock()
+	for len(c.rbuf) >= recvWindow && c.rErr == nil && !c.rEOF {
+		c.wcond.Wait()
+	}
+	c.rbuf = append(c.rbuf, b...)
+	c.rcond.Broadcast()
+	c.rmu.Unlock()
+}
+
+// In Read, after `c.rbuf = c.rbuf[n:]` and before returning:
+//   c.wcond.Signal()
+```
+
+Keep `reasm`'s cap as a hard safety ceiling (raise to 16 MiB); with the receive
+window in place a slow consumer no longer drives pending growth, so the cap error
+becomes a genuine anomaly. Document that `reasm` cap-exceed kills the stream
+(acceptable: it indicates pathological reordering, not normal slowness).
+
+### Correction F — FIN participates in resend; acks released correctly; BOTH directions (fixes Task 9)
+
+- The FIN segment is recorded in `unack` (Correction B) so `onFlowDown` resends
+  it. `ackTo(contig)` keeps a zero-length FIN segment at offset `off` until the
+  peer acks `contig >= off` (its reassembly reached the FIN offset).
+- Acks are emitted from `dispatch` on **both** the client and relay muxes
+  (Correction D adds the `Ack` write), and **both** muxes run `onFlowDown`
+  resend. This gives the return path (relay→client) the same flow-death recovery
+  as the forward path — the symmetric mux is the same code on both ends.
+
+### Correction G — `SessionBuilder` stores flows by index and starts exactly once (fixes races in Task 8b)
+
+The naïve builder ignores `idx` (breaking scheduler↔flow index alignment) and can
+`StartMux` more than once (two reader goroutines on one conn → frame corruption).
+Replace the whole `SessionBuilder` with:
+
+```go
+type SessionBuilder struct {
+	mu      sync.Mutex
+	count   uint16
+	flows   []Flow // len == count, indexed by declared flow index
+	filled  int
+	started bool
+	onOpen  OpenFunc
+}
+
+func NewSessionBuilder(count uint16, onOpen OpenFunc) *SessionBuilder {
+	return &SessionBuilder{count: count, flows: make([]Flow, count), onOpen: onOpen}
+}
+
+// AddFlow places f at its declared index and starts the mux exactly once when all
+// slots are filled. Returns started=true when it started the mux (caller drops the
+// session entry). Out-of-range or duplicate indices close the flow and return false.
+func (b *SessionBuilder) AddFlow(idx uint16, f Flow) (started bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if int(idx) >= int(b.count) || b.flows[idx] != nil {
+		f.Close()
+		return false
+	}
+	b.flows[idx] = f
+	b.filled++
+	if b.filled == int(b.count) && !b.started {
+		b.started = true
+		NewMux(&tcpTransport{flows: b.flows}, b.onOpen).Start()
+		return true
+	}
+	return false
+}
+
+// ClosePartial tears down a session that never completed (timeout path).
+func (b *SessionBuilder) ClosePartial() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.started {
+		return
+	}
+	for _, f := range b.flows {
+		if f != nil {
+			f.Close()
+		}
+	}
+}
+```
+
+`handleFlow` becomes: `if sb.AddFlow(idx, flow) { s.mu.Lock(); delete(s.sessions, sid); s.mu.Unlock() }`.
+Drop `Complete()`/`StartMux()` (Task 8a's `handleFlow` and 8b must match).
+
+### Correction H — session assembly timeout (fixes a leak in Task 8a)
+
+When a session is first created in `handleFlow`, start a timer; if it has not
+started within 15s, remove it from the map and `ClosePartial()` its flows:
+
+```go
+// in handleFlow, right after creating a NEW sb and storing it:
+time.AfterFunc(15*time.Second, func() {
+	s.mu.Lock()
+	cur, ok := s.sessions[sid]
+	if ok && cur == sb {
+		delete(s.sessions, sid)
+	}
+	s.mu.Unlock()
+	if ok && cur == sb {
+		sb.ClosePartial() // no-op if it already started
+	}
+})
+```
+
+### Correction I — `relayBond` must cross-close to avoid hangs (fixes Task 11)
+
+When one copy direction ends, the other can block forever in `Read`, so
+`wg.Wait()` never returns. Close both ends once either direction finishes:
+
+```go
+func (s *Server) relayBond(client net.Conn, stream io.ReadWriteCloser) {
+	s.Stats.OpenConn("bond")
+	defer s.Stats.CloseConn("bond")
+	var once sync.Once
+	closeBoth := func() { once.Do(func() { client.Close(); stream.Close() }) }
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		defer closeBoth()
+		buf := make([]byte, 32*1024)
+		for {
+			n, rerr := client.Read(buf)
+			if n > 0 {
+				if _, werr := stream.Write(buf[:n]); werr != nil {
+					return
+				}
+				s.Stats.AddUp("bond", uint64(n))
+			}
+			if rerr != nil {
+				return
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		defer closeBoth()
+		buf := make([]byte, 32*1024)
+		for {
+			n, rerr := stream.Read(buf)
+			if n > 0 {
+				if _, werr := client.Write(buf[:n]); werr != nil {
+					return
+				}
+				s.Stats.AddDown("bond", uint64(n))
+			}
+			if rerr != nil {
+				return
+			}
+		}
+	}()
+	wg.Wait()
+}
+```
+
+---
+
 ## File Structure
 
 **New — shared protocol:**
@@ -399,6 +773,9 @@ git commit -m "feat(bond): wire frame protocol (length-prefixed, offset-addresse
 ---
 
 ## Task 2: Reassembly buffer
+
+> ⚠️ **See Correction C** (overlap trimming + `TestReasmOverlapTrim`) and
+> **Correction E** (raise cap to 16 MiB) before implementing.
 
 **Files:**
 - Create: `internal/bond/reasm.go`
@@ -943,6 +1320,9 @@ git commit -m "feat(bond): Flow/Transport interfaces + TCP flow impl"
 
 ## Task 6: Logical stream `Conn`
 
+> ⚠️ **See Correction B** (half-close: `Close` is write-side only) and
+> **Correction E** (bounded receive window `wcond`/`recvWindow`) before implementing.
+
 **Files:**
 - Create: `internal/bond/conn.go`
 - Test: covered via the mux test in Task 7 (Conn has no external behavior without a mux).
@@ -1087,6 +1467,11 @@ git commit -m "feat(bond): logical stream Conn (segmenting Write, reassembled Re
 ---
 
 ## Task 7: Mux
+
+> ⚠️ **See Corrections A** (lazy `getOrCreate` registration), **B** (`markLocalFIN`/
+> `markRemoteFIN`), and **D** (FIN-offset EOF + per-stream `Ack` emission) before
+> implementing. The `dispatch` shown below is the naïve version — apply the
+> corrections.
 
 **Files:**
 - Create: `internal/bond/mux.go`
@@ -1410,6 +1795,10 @@ git commit -m "feat(bond): mux — multiplexed streams over flows, offset reasse
 ---
 
 ## Task 8: Relay server + client dialer + end-to-end integration
+
+> ⚠️ **See Corrections G** (`SessionBuilder` indexed slots + start-once) and
+> **H** (session assembly timeout) — they replace the `SessionBuilder` and
+> `handleFlow` shown below.
 
 **Files:**
 - Create: `internal/relay/server.go`
@@ -1868,6 +2257,9 @@ git commit -m "feat(relay): relay server + client dialer; end-to-end single-stre
 
 ## Task 9: Send-buffer + flow-death survival
 
+> ⚠️ **See Correction F** (FIN is resendable; acks emitted + `onFlowDown` resend
+> on BOTH client and relay muxes so the return path also recovers).
+
 **Files:**
 - Modify: `internal/bond/conn.go` (keep an unacked send buffer)
 - Modify: `internal/bond/mux.go` (track per-flow inflight; on flow error, resend unacked segments on a survivor; emit periodic Ack)
@@ -2136,6 +2528,9 @@ git commit -m "feat(config): persist BYO relay address/key/enabled"
 ---
 
 ## Task 11: Route SOCKS connections through the bond
+
+> ⚠️ **See Correction I** — `relayBond` must cross-close both ends when either
+> copy direction finishes (the version below hangs).
 
 **Files:**
 - Modify: `internal/proxy/socks5.go`
