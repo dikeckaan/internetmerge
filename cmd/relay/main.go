@@ -32,8 +32,11 @@ func main() {
 		log.Fatal("relay: no key provided (-key or INTERNETMERGE_RELAY_KEY)")
 	}
 	key, err := base64.StdEncoding.DecodeString(k)
-	if err != nil || len(key) < 16 {
+	if err != nil {
 		log.Fatalf("relay: invalid key: %v", err)
+	}
+	if len(key) < 16 {
+		log.Fatal("relay: key too short (need >= 16 bytes)")
 	}
 	ln, err := net.Listen("tcp", *listen)
 	if err != nil {

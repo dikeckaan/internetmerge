@@ -72,11 +72,27 @@ func New() *Engine {
 	return &Engine{Logger: log.Default(), conf: config.Load()}
 }
 
-// Config returns a copy of the persisted user config (for the UI to render).
+// Conf returns the live persisted user config pointer (for the UI to render).
 func (e *Engine) Conf() *config.Config {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.conf
+}
+
+// SetRelay updates the relay settings under the engine lock and persists them.
+func (e *Engine) SetRelay(rc config.RelayConfig) error {
+	e.mu.Lock()
+	e.conf.Relay = rc
+	snapshot := *e.conf
+	e.mu.Unlock()
+	return config.Save(&snapshot)
+}
+
+// GetRelay returns the current relay settings under the engine lock.
+func (e *Engine) GetRelay() config.RelayConfig {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.conf.Relay
 }
 
 // Start launches a bonding session. It returns an error if already running or
@@ -135,7 +151,9 @@ func (e *Engine) Start(cfg Config) error {
 			}
 		}
 		key, err := base64.StdEncoding.DecodeString(e.conf.Relay.Key)
-		if err != nil {
+		if len(ifNames) == 0 {
+			e.Logger.Printf("engine: relay bonding needs >=1 enabled link; bonding disabled")
+		} else if err != nil {
 			e.Logger.Printf("engine: relay key decode: %v (bonding disabled)", err)
 		} else if len(key) < 16 {
 			e.Logger.Printf("engine: relay key too short (%d bytes, need >=16); bonding disabled", len(key))

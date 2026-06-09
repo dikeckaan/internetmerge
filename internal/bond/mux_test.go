@@ -43,6 +43,34 @@ func pairTransports(t *testing.T, n int) (Transport, Transport) {
 	return &tcpTransport{flows: a}, &tcpTransport{flows: b}
 }
 
+func TestMuxCloseUnblocksRead(t *testing.T) {
+	ct, st := pairTransports(t, 1)
+	client := NewMux(ct, nil)
+	server := NewMux(st, func(stream *Conn, host string, port uint16) {
+		// accept but never send, so the client's Read blocks
+	})
+	client.Start()
+	server.Start()
+	defer server.Close()
+	stream, err := client.OpenStream("x", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		buf := make([]byte, 8)
+		stream.Read(buf)
+		close(done)
+	}()
+	time.Sleep(50 * time.Millisecond) // let the Read park
+	client.Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Read did not unblock on Close")
+	}
+}
+
 func TestMuxSingleStreamEcho(t *testing.T) {
 	ct, st := pairTransports(t, 2)
 	client := NewMux(ct, nil)

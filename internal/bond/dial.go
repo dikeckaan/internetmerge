@@ -2,6 +2,7 @@ package bond
 
 import (
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -15,6 +16,9 @@ import (
 // returns a started client Mux. When ifNames is nil all flows use the default
 // route (used by tests).
 func DialRelay(addr string, key []byte, nFlows int, ifNames []string) (*Mux, error) {
+	if nFlows <= 0 {
+		return nil, errors.New("bond: nFlows must be >= 1")
+	}
 	var sid [16]byte
 	if _, err := rand.Read(sid[:]); err != nil {
 		return nil, err

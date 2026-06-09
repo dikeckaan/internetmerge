@@ -49,6 +49,12 @@ func TestHandshakeRejectsBadKey(t *testing.T) {
 	}
 }
 
+func TestDialRelayRejectsZeroFlows(t *testing.T) {
+	if _, err := DialRelay("127.0.0.1:1", []byte("0123456789abcdef0123456789abcdef"), 0, nil); err == nil {
+		t.Fatal("expected error for zero flows")
+	}
+}
+
 func TestSessionBuilderStartsOnceByIndex(t *testing.T) {
 	noop := func(*Conn, string, uint16) {}
 	b := NewSessionBuilder(2, noop)

@@ -9,6 +9,8 @@ import (
 	"github.com/kaandikec/internetmerge/internal/bond/wire"
 )
 
+var errMuxClosed = errors.New("bond: mux closed")
+
 // OpenFunc is called by the relay side when the peer opens a stream.
 type OpenFunc func(stream *Conn, host string, port uint16)
 
@@ -316,6 +318,7 @@ func (m *Mux) Close() error {
 	}
 	close(m.done)
 	err := m.t.Close()
+	m.failAll(errMuxClosed) // wake any Conn.Read/deliver blocked on closed flows
 	m.wg.Wait()
 	return err
 }
