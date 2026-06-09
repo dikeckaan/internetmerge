@@ -1,5 +1,18 @@
 # InternetMerge
 
+<div align="center">
+
+![GitHub Stars](https://img.shields.io/github/stars/dikeckaan/internetmerge?style=flat-square&logo=github)
+![GitHub Forks](https://img.shields.io/github/forks/dikeckaan/internetmerge?style=flat-square&logo=github)
+![Watchers](https://img.shields.io/github/watchers/dikeckaan/internetmerge?style=flat-square&logo=github)
+![Total Downloads](https://img.shields.io/github/downloads/dikeckaan/internetmerge/total?style=flat-square&logo=github)
+![License](https://img.shields.io/github/license/dikeckaan/internetmerge?style=flat-square)
+![Go Version](https://img.shields.io/github/go-mod/go-version/dikeckaan/internetmerge?style=flat-square&logo=go)
+
+</div>
+
+---
+
 Bond multiple network links (Wi-Fi, Ethernet, USB tethering, …) into faster
 **total** internet — a cross-platform, Mac-first take on Connectify Dispatcher.
 
@@ -53,6 +66,51 @@ server you control and is planned as a future phase (see below).
 This matters on Windows: its WinINET system proxy only speaks SOCKS4, so SOCKS4
 support is what makes "route system traffic" actually work there. Apps that
 ignore the OS proxy can always point at the SOCKS5 proxy directly.
+
+## 📊 Statistics
+
+<table>
+  <tr>
+    <td align="center">
+      <sub><b>Repository Views</b></sub><br>
+      <a href="https://github.com/dikeckaan/internetmerge/graphs/traffic">
+        <img src="https://img.shields.io/endpoint?url=https://ghloc.vercel.app/api/dikeckaan/internetmerge/badge?style=flat" alt="views" />
+      </a>
+    </td>
+    <td align="center">
+      <sub><b>Unique Clones</b></sub><br>
+      <a href="https://github.com/dikeckaan/internetmerge/graphs/traffic">
+        <img src="https://img.shields.io/badge/dynamic/json?label=clones&query=uniques&url=https://raw.githubusercontent.com/dikeckaan/internetmerge/traffic/clones-data.json" alt="clones" />
+      </a>
+    </td>
+    <td align="center">
+      <sub><b>Contributors</b></sub><br>
+      <a href="https://github.com/dikeckaan/internetmerge/graphs/contributors">
+        <img src="https://img.shields.io/github/contributors/dikeckaan/internetmerge?style=flat-square" alt="contributors" />
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <sub><b>Open Issues</b></sub><br>
+      <a href="https://github.com/dikeckaan/internetmerge/issues">
+        <img src="https://img.shields.io/github/issues/dikeckaan/internetmerge?style=flat-square" alt="issues" />
+      </a>
+    </td>
+    <td align="center">
+      <sub><b>Commit Activity</b></sub><br>
+      <a href="https://github.com/dikeckaan/internetmerge/graphs/commit-activity">
+        <img src="https://img.shields.io/github/commit-activity/m/dikeckaan/internetmerge?style=flat-square" alt="activity" />
+      </a>
+    </td>
+    <td align="center">
+      <sub><b>Last Update</b></sub><br>
+      <a href="https://github.com/dikeckaan/internetmerge/commits">
+        <img src="https://img.shields.io/github/last-commit/dikeckaan/internetmerge?style=flat-square" alt="last-commit" />
+      </a>
+    </td>
+  </tr>
+</table>
 
 ## Download
 
