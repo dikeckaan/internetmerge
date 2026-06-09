@@ -108,7 +108,9 @@ setup_macos_native() {
   install_binary
   local key="${INTERNETMERGE_RELAY_KEY:-$(gen_key)}"
   local plist="$HOME/Library/LaunchAgents/com.internetmerge.relay.plist"
-  mkdir -p "$HOME/Library/LaunchAgents"
+  mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
+  # The plist embeds the secret key — create it private (not world-readable).
+  umask 077
   cat > "$plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -126,11 +128,12 @@ setup_macos_native() {
   <dict><key>INTERNETMERGE_RELAY_KEY</key><string>${key}</string></dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
-  <key>StandardOutPath</key><string>/tmp/internetmerge-relay.log</string>
-  <key>StandardErrorPath</key><string>/tmp/internetmerge-relay.log</string>
+  <key>StandardOutPath</key><string>${HOME}/Library/Logs/internetmerge-relay.log</string>
+  <key>StandardErrorPath</key><string>${HOME}/Library/Logs/internetmerge-relay.log</string>
 </dict>
 </plist>
 EOF
+  chmod 600 "$plist"
   launchctl unload "$plist" 2>/dev/null || true
   launchctl load "$plist"
   print_conn "$key"
