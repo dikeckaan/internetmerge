@@ -283,7 +283,8 @@ jobs:
           name: InternetMerge-linux
           path: dist/*
 
-  # ---- Relay: CGO-free Linux daemon (amd64 + arm64) ----
+  # ---- Relay CLI: CGO-free Linux binary (amd64 + arm64) ----
+  # The relay is now the `internetmerge relay` subcommand; we ship the full CLI.
   relay:
     needs: test
     runs-on: ubuntu-22.04
@@ -300,7 +301,7 @@ jobs:
         run: |
           if [ "${{ github.ref_type }}" = "tag" ]; then V="${{ github.ref_name }}"; else V="dev"; fi
           echo "v=$V" >> "$GITHUB_OUTPUT"
-      - name: Build relay
+      - name: Build CLI (includes relay subcommand)
         env:
           CGO_ENABLED: "0"
           GOOS: linux
@@ -309,11 +310,11 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/dist"
           go build -trimpath \
             -ldflags "-s -w -X ${VERSION_PKG}=${{ steps.ver.outputs.v }}" \
-            -o "$GITHUB_WORKSPACE/dist/internetmerge-relay-linux-${{ matrix.goarch }}" ./cmd/relay
+            -o "$GITHUB_WORKSPACE/dist/internetmerge-linux-${{ matrix.goarch }}" ./cmd/internetmerge
       - uses: actions/upload-artifact@v4
         with:
           name: relay-${{ matrix.goarch }}
-          path: dist/internetmerge-relay-linux-${{ matrix.goarch }}
+          path: dist/internetmerge-linux-${{ matrix.goarch }}
 
   # ---- Single release job: gather all artifacts, attach once ----
   release:

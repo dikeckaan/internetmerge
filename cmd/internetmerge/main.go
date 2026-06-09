@@ -39,6 +39,8 @@ func main() {
 		runList()
 	case "run":
 		runServe(os.Args[2:])
+	case "relay":
+		runRelay(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Println("InternetMerge", version.Version)
 	case "-h", "--help", "help":
@@ -56,6 +58,7 @@ func usage() {
 Commands:
   list                       List network interfaces
   run --interfaces a,b ...   Start the SOCKS5 dispatcher
+  relay [--listen :7000]     Run the bonding relay server (--keygen to mint a key)
 
 Run "internetmerge run -h" for run flags.
 `)
