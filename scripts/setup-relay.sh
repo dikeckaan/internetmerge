@@ -49,8 +49,10 @@ print_conn() {
 setup_docker() {
   echo "Using Docker."
   local key="${INTERNETMERGE_RELAY_KEY:-$(gen_key)}"
-  if [ ! -f .env ]; then echo "INTERNETMERGE_RELAY_KEY=${key}" > .env; fi
-  docker compose up -d
+  docker rm -f internetmerge-relay >/dev/null 2>&1 || true
+  docker run -d --name internetmerge-relay --restart unless-stopped \
+    -p "${PORT}:7000" -e "INTERNETMERGE_RELAY_KEY=${key}" \
+    ghcr.io/dikeckaan/internetmerge:latest
   print_conn "$key"
 }
 
@@ -79,8 +81,24 @@ setup_linux_native() {
   local key="${INTERNETMERGE_RELAY_KEY:-$(gen_key)}"
   echo "INTERNETMERGE_RELAY_KEY=${key}" | sudo tee /etc/internetmerge-relay.env >/dev/null
   sudo chmod 600 /etc/internetmerge-relay.env
-  curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/build/relay/internetmerge-relay.service" \
-    | sudo tee /etc/systemd/system/internetmerge-relay.service >/dev/null
+  sudo tee /etc/systemd/system/internetmerge-relay.service >/dev/null <<EOF
+[Unit]
+Description=InternetMerge bonding relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/internetmerge relay --listen :${PORT}
+EnvironmentFile=/etc/internetmerge-relay.env
+Restart=on-failure
+RestartSec=2
+DynamicUser=yes
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
   sudo systemctl daemon-reload
   sudo systemctl enable --now internetmerge-relay
   print_conn "$key"
@@ -91,8 +109,28 @@ setup_macos_native() {
   local key="${INTERNETMERGE_RELAY_KEY:-$(gen_key)}"
   local plist="$HOME/Library/LaunchAgents/com.internetmerge.relay.plist"
   mkdir -p "$HOME/Library/LaunchAgents"
-  curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/build/relay/com.internetmerge.relay.plist" \
-    | sed "s|__RELAY_KEY__|${key}|" > "$plist"
+  cat > "$plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.internetmerge.relay</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/internetmerge</string>
+    <string>relay</string>
+    <string>--listen</string>
+    <string>:${PORT}</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict><key>INTERNETMERGE_RELAY_KEY</key><string>${key}</string></dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/tmp/internetmerge-relay.log</string>
+  <key>StandardErrorPath</key><string>/tmp/internetmerge-relay.log</string>
+</dict>
+</plist>
+EOF
   launchctl unload "$plist" 2>/dev/null || true
   launchctl load "$plist"
   print_conn "$key"

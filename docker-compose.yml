@@ -1,10 +1,9 @@
 # One-command relay: `INTERNETMERGE_RELAY_KEY=... docker compose up -d`
 # (or put the key in a .env file next to this compose file).
+# Pulls the published image. To build locally instead:
+#   docker build -f build/docker/Dockerfile -t internetmerge .
 services:
   relay:
-    build:
-      context: .
-      dockerfile: build/docker/Dockerfile
     image: ghcr.io/dikeckaan/internetmerge:latest
     restart: unless-stopped
     ports:

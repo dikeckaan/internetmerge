@@ -356,7 +356,7 @@ jobs:
           context: .
           file: build/docker/Dockerfile
           platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name != 'pull_request' }}
+          push: ${{ github.ref_type == 'tag' }}
           tags: ${{ steps.meta.outputs.tags }}
           build-args: VERSION=${{ steps.ver.outputs.v }}
 

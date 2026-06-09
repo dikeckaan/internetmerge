@@ -30,8 +30,10 @@ function Write-Conn($key) {
 function Setup-Docker {
   Write-Host "Using Docker."
   $key = if ($env:INTERNETMERGE_RELAY_KEY) { $env:INTERNETMERGE_RELAY_KEY } else { New-Key }
-  if (-not (Test-Path ".env")) { "INTERNETMERGE_RELAY_KEY=$key" | Out-File -Encoding ascii .env }
-  docker compose up -d
+  docker rm -f internetmerge-relay 2>$null | Out-Null
+  docker run -d --name internetmerge-relay --restart unless-stopped `
+    -p "${Port}:7000" -e "INTERNETMERGE_RELAY_KEY=$key" `
+    ghcr.io/dikeckaan/internetmerge:latest
   Write-Conn $key
 }
 
