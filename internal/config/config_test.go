@@ -41,6 +41,33 @@ func TestLoadSaveRoundTrip(t *testing.T) {
 	}
 }
 
+func TestRelayConfigPersists(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("HOME", dir)
+
+	c := Default()
+	c.Relay = RelayConfig{
+		Enabled: true,
+		Address: "vps.example.com:7000",
+		Key:     "base64key==",
+	}
+
+	if err := Save(c); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got := Load()
+	if !got.Relay.Enabled {
+		t.Errorf("Relay.Enabled = false, want true")
+	}
+	if got.Relay.Address != "vps.example.com:7000" {
+		t.Errorf("Relay.Address = %q, want vps.example.com:7000", got.Relay.Address)
+	}
+	if got.Relay.Key != "base64key==" {
+		t.Errorf("Relay.Key = %q, want base64key==", got.Relay.Key)
+	}
+}
+
 func TestLoadDefaultsWhenMissing(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)

@@ -47,6 +47,13 @@ type AppRule struct {
 	IfName string `json:"ifName"`
 }
 
+// RelayConfig holds the Phase 3 BYO relay connection settings.
+type RelayConfig struct {
+	Enabled bool   `json:"enabled"`
+	Address string `json:"address"` // host:port of the user's relay
+	Key     string `json:"key"`     // base64-encoded shared key
+}
+
 // Config is the full persisted state.
 type Config struct {
 	Mode            string              `json:"mode"`
@@ -58,6 +65,7 @@ type Config struct {
 	StartOnLogin    bool                `json:"startOnLogin"`
 	MinimizeToTray  bool                `json:"minimizeToTray"`
 	RouteSystem     bool                `json:"routeSystem"` // set OS proxy on start
+	Relay           RelayConfig         `json:"relay"`
 }
 
 // Default returns a config with sensible defaults.
