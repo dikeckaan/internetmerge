@@ -78,6 +78,9 @@ func (c *Conn) Read(p []byte) (int, error) {
 	}
 	n := copy(p, c.rbuf)
 	c.rbuf = c.rbuf[n:]
+	if len(c.rbuf) == 0 {
+		c.rbuf = nil // release the backing array once fully drained
+	}
 	c.wcond.Signal()
 	return n, nil
 }

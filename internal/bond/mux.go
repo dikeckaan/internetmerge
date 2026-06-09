@@ -70,7 +70,7 @@ func (m *Mux) Start() {
 func (m *Mux) OpenStream(host string, port uint16) (io.ReadWriteCloser, error) {
 	id := atomic.AddUint32(&m.nextID, 2) - 2
 	c := m.registerStream(id)
-	if err := m.anyFlow().WriteFrame(&wire.Frame{
+	if err := m.pickFlow().WriteFrame(&wire.Frame{
 		Type: wire.StreamOpen, StreamID: id, Host: host, Port: port,
 	}); err != nil {
 		m.removeStream(id)
@@ -145,11 +145,13 @@ func (m *Mux) sendData(id uint32, off uint64, payload []byte, fin bool) error {
 	}
 	return m.t.Flows()[idx].WriteFrame(&wire.Frame{
 		Type: wire.StreamData, StreamID: id, Offset: off, Fin: fin,
-		Payload: append([]byte(nil), payload...),
+		Payload: payload,
 	})
 }
 
-func (m *Mux) anyFlow() Flow {
+// pickFlow returns a flow chosen by the weighted scheduler (falls back to
+// Flows()[0] if the scheduler has no live flows yet).
+func (m *Mux) pickFlow() Flow {
 	if idx, ok := m.sched.pick(); ok {
 		return m.t.Flows()[idx]
 	}
@@ -212,9 +214,6 @@ func (m *Mux) dispatch(fr *wire.Frame) {
 		if len(out) > 0 {
 			rs.conn.deliver(out)
 		}
-		if len(out) > 0 || eof {
-			_ = m.anyFlow().WriteFrame(&wire.Frame{Type: wire.Ack, StreamID: fr.StreamID, Contig: contig})
-		}
 		if eof {
 			rs.conn.deliverEOF()
 			m.markRemoteFIN(fr.StreamID)
@@ -225,7 +224,7 @@ func (m *Mux) dispatch(fr *wire.Frame) {
 			m.markRemoteFIN(fr.StreamID)
 		}
 	case wire.Ping:
-		_ = m.anyFlow().WriteFrame(&wire.Frame{Type: wire.Pong, TS: fr.TS})
+		_ = m.pickFlow().WriteFrame(&wire.Frame{Type: wire.Pong, TS: fr.TS})
 	case wire.Ack, wire.Pong:
 		// Task 9 uses Ack to release the send buffer; Pong is informational.
 	}
@@ -233,8 +232,9 @@ func (m *Mux) dispatch(fr *wire.Frame) {
 
 func (m *Mux) failAll(err error) {
 	m.mu.Lock()
-	for _, rs := range m.streams {
+	for id, rs := range m.streams {
 		rs.conn.deliverErr(err)
+		delete(m.streams, id)
 	}
 	m.mu.Unlock()
 }
