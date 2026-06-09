@@ -12,8 +12,15 @@ const maxSegment = 32 * 1024
 // backpressure up the flow) when exceeded, Read signals when it drains.
 const recvWindow = 4 << 20
 
-// Conn is one logical bonded stream. It satisfies io.ReadWriteCloser. Write
-// scatters bytes across flows via the mux; Read returns reassembled bytes.
+// segment is a sent chunk retained for possible retransmission until acked.
+type segment struct {
+	off     uint64
+	payload []byte
+	fin     bool
+}
+
+// Conn is one logical bonded stream (io.ReadWriteCloser). Write scatters bytes
+// across flows via the mux; Read returns reassembled bytes.
 type Conn struct {
 	id  uint32
 	mux *Mux
@@ -22,11 +29,12 @@ type Conn struct {
 	sendMu  sync.Mutex
 	sendOff uint64
 	closed  bool
+	unack   []segment // sent-but-unacked, for resend on flow death
 
 	// receive side
 	rmu   sync.Mutex
-	rcond *sync.Cond // signalled when bytes available to read
-	wcond *sync.Cond // signalled by Read when rbuf drains (backpressure release)
+	rcond *sync.Cond // bytes available to read
+	wcond *sync.Cond // rbuf drained (backpressure release)
 	rbuf  []byte
 	rEOF  bool
 	rErr  error
@@ -39,8 +47,8 @@ func newConn(id uint32, mux *Mux) *Conn {
 	return c
 }
 
-// Write breaks p into segments, assigns sequential offsets, and asks the mux to
-// schedule each segment onto a flow.
+// Write breaks p into segments, retains each for possible resend, and asks the
+// mux to schedule it onto a flow.
 func (c *Conn) Write(p []byte) (int, error) {
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
@@ -53,9 +61,11 @@ func (c *Conn) Write(p []byte) (int, error) {
 		if n > maxSegment {
 			n = maxSegment
 		}
-		if err := c.mux.sendData(c.id, c.sendOff, p[:n], false); err != nil {
+		seg := append([]byte(nil), p[:n]...) // retained for possible resend
+		if err := c.mux.sendData(c.id, c.sendOff, seg, false); err != nil {
 			return total, err
 		}
+		c.unack = append(c.unack, segment{off: c.sendOff, payload: seg})
 		c.sendOff += uint64(n)
 		total += n
 		p = p[n:]
@@ -85,8 +95,8 @@ func (c *Conn) Read(p []byte) (int, error) {
 	return n, nil
 }
 
-// deliver is called by the mux with newly-contiguous inbound bytes. It applies
-// backpressure once rbuf exceeds recvWindow.
+// deliver appends newly-contiguous inbound bytes, applying backpressure once rbuf
+// exceeds recvWindow.
 func (c *Conn) deliver(b []byte) {
 	c.rmu.Lock()
 	for len(c.rbuf) >= recvWindow && c.rErr == nil && !c.rEOF {
@@ -115,9 +125,35 @@ func (c *Conn) deliverErr(err error) {
 	c.rmu.Unlock()
 }
 
-// Close sends a FIN segment (write-side close) and marks the local FIN. The mux
-// removes the stream only once BOTH directions have FINed, so a half-closed
-// stream can still receive the response (the SOCKS upload-then-download pattern).
+// ackTo drops every sent segment the peer has received contiguously. A FIN
+// segment occupies one virtual byte past its offset, so it is retained (and thus
+// resent on flow death) until the peer's contiguous offset passes it — which on
+// the normal path it never does, so the FIN is simply cleaned up at teardown.
+func (c *Conn) ackTo(contig uint64) {
+	c.sendMu.Lock()
+	keep := c.unack[:0]
+	for _, s := range c.unack {
+		end := s.off + uint64(len(s.payload))
+		if s.fin {
+			end = s.off + 1
+		}
+		if end > contig {
+			keep = append(keep, s)
+		}
+	}
+	c.unack = keep
+	c.sendMu.Unlock()
+}
+
+func (c *Conn) unackedSnapshot() []segment {
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+	return append([]segment(nil), c.unack...)
+}
+
+// Close sends a FIN (write-side close) and marks the local FIN; the mux removes
+// the stream only once BOTH directions have FINed, so a half-closed stream can
+// still receive its response.
 func (c *Conn) Close() error {
 	c.sendMu.Lock()
 	if c.closed {
@@ -126,6 +162,7 @@ func (c *Conn) Close() error {
 	}
 	c.closed = true
 	off := c.sendOff
+	c.unack = append(c.unack, segment{off: off, fin: true})
 	c.sendMu.Unlock()
 	_ = c.mux.sendData(c.id, off, nil, true)
 	c.mux.markLocalFIN(c.id)

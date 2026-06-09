@@ -16,44 +16,51 @@ type OpenFunc func(stream *Conn, host string, port uint16)
 type Mux struct {
 	t      Transport
 	sched  *scheduler
-	onOpen OpenFunc // nil on the client side
+	onOpen OpenFunc
 	bufCap int
 
 	mu      sync.Mutex
 	streams map[uint32]*recvState
-	nextID  uint32 // client-allocated odd ids
+	nextID  uint32
 
+	ackMu      sync.Mutex
+	ackPending map[uint32]uint64
+	ackCh      chan struct{}
+
+	done   chan struct{}
 	wg     sync.WaitGroup
 	closed atomic.Bool
 }
 
-// recvState pairs a Conn with its reassembly buffer and per-stream FIN/teardown
-// bookkeeping. Fields other than conn/rb are guarded by Mux.mu (for the FIN/open
-// flags) and rb is guarded by rs.mu.
+// recvState pairs a Conn with its reassembly buffer and per-stream bookkeeping.
+// rb/hasFin/finOff are guarded by rs.mu; opened/localFIN/remoteFIN by Mux.mu.
 type recvState struct {
 	conn *Conn
 	rb   *reasm
-	mu   sync.Mutex // guards rb
+	mu   sync.Mutex
 
-	opened              bool   // relay: onOpen called once (guarded by Mux.mu)
-	hasFin              bool   // a FIN segment was seen (guarded by rs.mu)
-	finOff              uint64 // contiguous offset at which EOF is reached (rs.mu)
-	localFIN, remoteFIN bool   // teardown when both true (guarded by Mux.mu)
+	opened              bool
+	hasFin              bool
+	finOff              uint64
+	localFIN, remoteFIN bool
 }
 
 // NewMux builds a mux over t. onOpen is nil for the client, set for the relay.
 func NewMux(t Transport, onOpen OpenFunc) *Mux {
 	return &Mux{
-		t:       t,
-		sched:   newScheduler(len(t.Flows())),
-		onOpen:  onOpen,
-		bufCap:  16 << 20,
-		streams: make(map[uint32]*recvState),
-		nextID:  1,
+		t:          t,
+		sched:      newScheduler(len(t.Flows())),
+		onOpen:     onOpen,
+		bufCap:     16 << 20,
+		streams:    make(map[uint32]*recvState),
+		nextID:     1,
+		ackPending: make(map[uint32]uint64),
+		ackCh:      make(chan struct{}, 1),
+		done:       make(chan struct{}),
 	}
 }
 
-// Start launches one reader goroutine per flow.
+// Start launches one reader goroutine per flow plus the ack writer.
 func (m *Mux) Start() {
 	for _, f := range m.t.Flows() {
 		f := f
@@ -63,6 +70,11 @@ func (m *Mux) Start() {
 			m.readLoop(f)
 		}()
 	}
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		m.ackWriter()
+	}()
 }
 
 // OpenStream allocates a stream id, tells the peer to dial host:port, and returns
@@ -90,8 +102,6 @@ func (m *Mux) registerStream(id uint32) *Conn {
 	return c
 }
 
-// getOrCreate returns the recvState for id, creating it if missing (used on the
-// relay when StreamData arrives before its StreamOpen).
 func (m *Mux) getOrCreate(id uint32) *recvState {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -137,20 +147,16 @@ func (m *Mux) markRemoteFIN(id uint32) {
 	m.mu.Unlock()
 }
 
-// sendData schedules one segment onto an eligible flow.
 func (m *Mux) sendData(id uint32, off uint64, payload []byte, fin bool) error {
 	idx, ok := m.sched.pick()
 	if !ok {
 		return errors.New("bond: no live flow")
 	}
 	return m.t.Flows()[idx].WriteFrame(&wire.Frame{
-		Type: wire.StreamData, StreamID: id, Offset: off, Fin: fin,
-		Payload: payload,
+		Type: wire.StreamData, StreamID: id, Offset: off, Fin: fin, Payload: payload,
 	})
 }
 
-// pickFlow returns a flow chosen by the weighted scheduler (falls back to
-// Flows()[0] if the scheduler has no live flows yet).
 func (m *Mux) pickFlow() Flow {
 	if idx, ok := m.sched.pick(); ok {
 		return m.t.Flows()[idx]
@@ -165,22 +171,40 @@ func (m *Mux) readLoop(f Flow) {
 			if m.closed.Load() {
 				return
 			}
-			m.onFlowError(err)
+			m.onFlowDown(f.Index(), err)
 			return
 		}
 		m.dispatch(fr)
 	}
 }
 
-// onFlowError fails all streams on a flow read error. Task 9 replaces this with
-// per-flow resend recovery.
-func (m *Mux) onFlowError(err error) { m.failAll(err) }
+// onFlowDown marks a flow down and, while other flows survive, resends every
+// stream's unacked segments on a surviving flow. If no flow survives, it fails all
+// streams.
+func (m *Mux) onFlowDown(idx int, err error) {
+	m.sched.setDown(idx, true)
+	if m.sched.eligibleCount() == 0 {
+		m.failAll(err)
+		return
+	}
+	m.mu.Lock()
+	streams := make([]*recvState, 0, len(m.streams))
+	for _, rs := range m.streams {
+		streams = append(streams, rs)
+	}
+	m.mu.Unlock()
+	for _, rs := range streams {
+		for _, s := range rs.conn.unackedSnapshot() {
+			_ = m.sendData(rs.conn.id, s.off, s.payload, s.fin)
+		}
+	}
+}
 
 func (m *Mux) dispatch(fr *wire.Frame) {
 	switch fr.Type {
 	case wire.StreamOpen:
 		if m.onOpen == nil {
-			return // client never accepts opens
+			return
 		}
 		rs := m.getOrCreate(fr.StreamID)
 		m.mu.Lock()
@@ -214,6 +238,9 @@ func (m *Mux) dispatch(fr *wire.Frame) {
 		if len(out) > 0 {
 			rs.conn.deliver(out)
 		}
+		if len(out) > 0 || eof {
+			m.queueAck(fr.StreamID, contig)
+		}
 		if eof {
 			rs.conn.deliverEOF()
 			m.markRemoteFIN(fr.StreamID)
@@ -223,10 +250,49 @@ func (m *Mux) dispatch(fr *wire.Frame) {
 			rs.conn.deliverEOF()
 			m.markRemoteFIN(fr.StreamID)
 		}
+	case wire.Ack:
+		if rs := m.get(fr.StreamID); rs != nil {
+			rs.conn.ackTo(fr.Contig)
+		}
 	case wire.Ping:
 		_ = m.pickFlow().WriteFrame(&wire.Frame{Type: wire.Pong, TS: fr.TS})
-	case wire.Ack, wire.Pong:
-		// Task 9 uses Ack to release the send buffer; Pong is informational.
+	case wire.Pong:
+		// informational
+	}
+}
+
+// queueAck records the latest contiguous offset for a stream and nudges the ack
+// writer. The Ack frame is written by ackWriter, never inline in the readLoop.
+func (m *Mux) queueAck(id uint32, contig uint64) {
+	m.ackMu.Lock()
+	if contig > m.ackPending[id] {
+		m.ackPending[id] = contig
+	}
+	m.ackMu.Unlock()
+	select {
+	case m.ackCh <- struct{}{}:
+	default:
+	}
+}
+
+func (m *Mux) ackWriter() {
+	for {
+		select {
+		case <-m.done:
+			return
+		case <-m.ackCh:
+			m.flushAcks()
+		}
+	}
+}
+
+func (m *Mux) flushAcks() {
+	m.ackMu.Lock()
+	pend := m.ackPending
+	m.ackPending = make(map[uint32]uint64)
+	m.ackMu.Unlock()
+	for id, contig := range pend {
+		_ = m.pickFlow().WriteFrame(&wire.Frame{Type: wire.Ack, StreamID: id, Contig: contig})
 	}
 }
 
@@ -239,9 +305,16 @@ func (m *Mux) failAll(err error) {
 	m.mu.Unlock()
 }
 
-// Close stops the mux and closes the transport.
+// KillFlowForTest closes flow i to simulate a link drop (test seam).
+func (m *Mux) KillFlowForTest(i int) { m.t.Flows()[i].Close() }
+
+// Close stops the mux (readers + ack writer) and closes the transport.
 func (m *Mux) Close() error {
-	m.closed.Store(true)
+	if m.closed.Swap(true) {
+		m.wg.Wait()
+		return nil
+	}
+	close(m.done)
 	err := m.t.Close()
 	m.wg.Wait()
 	return err

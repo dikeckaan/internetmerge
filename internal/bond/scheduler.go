@@ -59,3 +59,16 @@ func (s *scheduler) pick() (int, bool) {
 	s.current[best] -= total
 	return best, true
 }
+
+// eligibleCount returns how many flows are currently up with positive weight.
+func (s *scheduler) eligibleCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for i := range s.weight {
+		if !s.down[i] && s.weight[i] > 0 {
+			n++
+		}
+	}
+	return n
+}
