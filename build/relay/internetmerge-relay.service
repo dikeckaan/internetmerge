@@ -4,7 +4,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=/usr/local/bin/internetmerge-relay -listen :7000
+ExecStart=/usr/local/bin/internetmerge relay --listen :7000
 EnvironmentFile=/etc/internetmerge-relay.env
 Restart=on-failure
 RestartSec=2
